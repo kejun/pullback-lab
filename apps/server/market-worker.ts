@@ -145,7 +145,7 @@ export const MARKET_WORKER_SCHEMA_SQL = `
       CREATE TABLE IF NOT EXISTS market_worker_watermarks(instrument_id TEXT PRIMARY KEY,json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS market_worker_admission(id INTEGER PRIMARY KEY CHECK(id=1),last_request_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS market_worker_monthly_symbols(month TEXT NOT NULL,symbol TEXT NOT NULL,PRIMARY KEY(month,symbol));
-    
+
       CREATE TRIGGER IF NOT EXISTS market_provider_receipts_no_update BEFORE UPDATE ON market_provider_receipts BEGIN SELECT RAISE(ABORT,'IMMUTABLE_PROVIDER_RECEIPT'); END;
       CREATE TRIGGER IF NOT EXISTS market_provider_receipts_no_delete BEFORE DELETE ON market_provider_receipts BEGIN SELECT RAISE(ABORT,'IMMUTABLE_PROVIDER_RECEIPT'); END;
       CREATE TRIGGER IF NOT EXISTS market_provider_receipts_no_replace BEFORE INSERT ON market_provider_receipts WHEN EXISTS(SELECT 1 FROM market_provider_receipts WHERE sequence=NEW.sequence) BEGIN SELECT RAISE(ABORT,'IMMUTABLE_PROVIDER_RECEIPT'); END;

@@ -21,4 +21,3 @@
       CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS command_results(key TEXT PRIMARY KEY, route TEXT NOT NULL, input_hash TEXT NOT NULL, json TEXT NOT NULL);
       INSERT OR IGNORE INTO schema_migrations VALUES(1, CAST(unixepoch('subsec') * 1000 AS INTEGER));
-    
