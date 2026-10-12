@@ -14,16 +14,25 @@ function hash(b: NormalizedBar): string {
   const { receivedAt, historical, ...payload } = b;
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
-/** Separate immutable raw receipts from accepted revisions. Caller wraps ingest + plan pause in one transaction. */
-export class BarRepository {
-  constructor(private readonly db: Database.Database) {
-    db.exec(`CREATE TABLE IF NOT EXISTS market_raw_inputs(
+export const BAR_REPOSITORY_SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS market_raw_inputs(
       ingest_sequence INTEGER PRIMARY KEY AUTOINCREMENT,logical_key TEXT NOT NULL,provider_revision TEXT NOT NULL,
       received_at INTEGER NOT NULL,payload_hash TEXT NOT NULL,payload_json TEXT NOT NULL,status TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS market_bar_revisions(
       logical_key TEXT NOT NULL,provider_revision TEXT NOT NULL,payload_hash TEXT NOT NULL,ingest_sequence INTEGER NOT NULL,
       PRIMARY KEY(logical_key,provider_revision),FOREIGN KEY(ingest_sequence) REFERENCES market_raw_inputs(ingest_sequence));
-      CREATE INDEX IF NOT EXISTS market_raw_cutoff ON market_raw_inputs(received_at,ingest_sequence);`);
+      CREATE INDEX IF NOT EXISTS market_raw_cutoff ON market_raw_inputs(received_at,ingest_sequence);
+      CREATE TRIGGER IF NOT EXISTS market_bar_revisions_no_update BEFORE UPDATE ON market_bar_revisions BEGIN SELECT RAISE(ABORT,'IMMUTABLE_BAR_REVISION'); END;
+      CREATE TRIGGER IF NOT EXISTS market_bar_revisions_no_delete BEFORE DELETE ON market_bar_revisions BEGIN SELECT RAISE(ABORT,'IMMUTABLE_BAR_REVISION'); END;
+      CREATE TRIGGER IF NOT EXISTS market_bar_revisions_no_replace BEFORE INSERT ON market_bar_revisions WHEN EXISTS(SELECT 1 FROM market_bar_revisions WHERE logical_key=NEW.logical_key AND provider_revision=NEW.provider_revision) BEGIN SELECT RAISE(ABORT,'IMMUTABLE_BAR_REVISION'); END;
+      CREATE TRIGGER IF NOT EXISTS market_raw_inputs_no_update BEFORE UPDATE ON market_raw_inputs BEGIN SELECT RAISE(ABORT,'IMMUTABLE_NORMALIZED_RECEIPT'); END;
+      CREATE TRIGGER IF NOT EXISTS market_raw_inputs_no_delete BEFORE DELETE ON market_raw_inputs BEGIN SELECT RAISE(ABORT,'IMMUTABLE_NORMALIZED_RECEIPT'); END;
+      CREATE TRIGGER IF NOT EXISTS market_raw_inputs_no_replace BEFORE INSERT ON market_raw_inputs WHEN EXISTS(SELECT 1 FROM market_raw_inputs WHERE ingest_sequence=NEW.ingest_sequence) BEGIN SELECT RAISE(ABORT,'IMMUTABLE_NORMALIZED_RECEIPT'); END;
+`;
+
+/** Separate immutable raw receipts from accepted revisions. Caller wraps ingest + plan pause in one transaction. */
+export class BarRepository {
+  constructor(private readonly db: Database.Database) {
+    db.exec(BAR_REPOSITORY_SCHEMA_SQL);
   }
   ingest(bar: NormalizedBar): IngestResult {
     return this.db.transaction(() => {

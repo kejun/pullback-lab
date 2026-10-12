@@ -25,9 +25,7 @@ export function replayPlan(
       "ATTEMPT_REQUIRED",
       "请先完成风险检查并启用一次合成尝试",
     );
-  const existing = store
-    .events()
-    .filter((event) => event.attemptId === plan.attemptId);
+  const existing = store.eventsForAttempt(plan.attemptId);
   if (existing.length) return existing;
   if (!["WAIT_RETEST", "ARMED"].includes(plan.status))
     throw new ApiError(
@@ -39,10 +37,20 @@ export function replayPlan(
   const instrument = frozen.instrument;
   const oneMinute = store.bars(plan.instrumentId, "1m");
   const fiveMinute = store.bars(plan.instrumentId, "5m");
-  const daily = store.bars(plan.instrumentId, "1D");
+  const daily = store
+    .bars(plan.instrumentId, "1D")
+    .filter(
+      (bar) =>
+        bar.final &&
+        bar.receivedAt <= now &&
+        new Date(bar.time * 1000).toISOString().slice(0, 10) < plan.sessionDate,
+    );
   if (!oneMinute.length || !daily.length)
     throw new ApiError(422, "FIXTURE_MISSING", "请先载入完整合成数据");
+  const supportRevisions = store.supportRevisionReasons(plan, now);
   if (
+    supportRevisions.length ||
+    !plan.supportSnapshot?.ready ||
     JSON.stringify(instrument) !==
       JSON.stringify(store.instrument(plan.instrumentId).instrument) ||
     JSON.stringify(frozen.previousDailyBar) !== JSON.stringify(daily.at(-1))
@@ -53,7 +61,7 @@ export function replayPlan(
       "DATA_PAUSED",
       now,
       { synthetic: true, frozenPlanVersion: frozen },
-      ["PLAN_DATA_REVISION_CHANGED"],
+      supportRevisions.length ? supportRevisions : ["SUPPORT_NOT_READY"],
     );
   }
   const open = oneMinute[0].time * 1000;
@@ -207,6 +215,7 @@ export function replayPlan(
     state.status,
     now,
     {
+      algorithmVersion: "pullback-c01-c07-v1",
       synthetic: true,
       config,
       inputs,

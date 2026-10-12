@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import Decimal from "decimal.js";
 import { createApp, type PullbackApp } from "../app.js";
 import { Store } from "../store.js";
+import { generateDemoBars } from "../../../packages/market-data/fixtures.js";
 import type {
   Funds,
   Plan,
@@ -29,6 +30,10 @@ const input: PlanInput = {
   sessionDate: "2026-10-09",
   reason: "明确合成固定样本",
   backgroundConfirmed: true,
+  supportSelections: [
+    { source: "EMA9" },
+    { source: "HORIZONTAL", id: "main", price: "100", label: "人工水平线" },
+  ],
 };
 const funds: Funds = {
   generation: 0,
@@ -545,7 +550,7 @@ describe("SQLite transaction boundary", () => {
     const path = join(dir, "race.db");
     const store = new Store(path);
     const instrument = {
-      id: "RACE",
+      id: "DEMO-US-A",
       symbol: "RACE.US",
       name: "Synthetic concurrency fixture",
       market: "US" as const,
@@ -557,6 +562,7 @@ describe("SQLite transaction boundary", () => {
       rulesVerified: true,
     };
     store.putInstrument({ instrument, manual: false, tags: [], note: "" });
+    store.putBars(instrument.id, "1D", generateDemoBars(instrument.id));
     store.updateFunds(
       { ...funds, cash: { USD: "100", CNY: "0" }, maxWeight: "1" },
       0,
@@ -564,10 +570,7 @@ describe("SQLite transaction boundary", () => {
     );
     const raceInput = {
       ...input,
-      instrumentId: "RACE",
-      primarySupport: "95",
-      lower: "94",
-      upper: "96",
+      instrumentId: instrument.id,
       stop: "90",
       entryMin: "99",
       entryMax: "100",

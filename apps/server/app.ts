@@ -28,6 +28,11 @@ import {
 } from "../../packages/market-data/index.js";
 import { ApiError, Store } from "./store.js";
 import { replayPlan } from "./replay.js";
+import { auditDecisionInput } from "./audit-replay.js";
+import {
+  emptyMarketWorkerStatus,
+  type MarketWorkerStatus,
+} from "./market-worker.js";
 
 export interface AppOptions {
   databasePath?: string;
@@ -38,6 +43,7 @@ export interface AppOptions {
   secureCookies?: boolean;
   logger?: boolean;
   restore?: boolean;
+  marketStatus?: () => MarketWorkerStatus;
 }
 export type PullbackApp = FastifyInstance & { store: Store };
 const numeric = z
@@ -47,6 +53,33 @@ const numeric = z
 const positive = numeric.refine((s) => new Decimal(s).gt(0), "数值必须大于零");
 const integer = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const version = z.object({ expectedVersion: integer.positive() });
+const supportSelectionsSchema = z
+  .array(
+    z.union([
+      z
+        .object({ source: z.enum(["EMA9", "EMA21", "EMA50", "AVWAP"]) })
+        .strict(),
+      z
+        .object({
+          source: z.literal("HORIZONTAL"),
+          id: z.string().min(1).max(100),
+          price: positive,
+          label: z.string().max(100),
+        })
+        .strict(),
+    ]),
+  )
+  .max(20);
+const supportPreviewSchema = z.object({
+  instrumentId: z.string().min(1).max(100),
+  anchorTime: integer.nullable(),
+  primarySupport: positive,
+  supportSelections: supportSelectionsSchema,
+  sessionDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
+});
 const planSchema = z.object({
   instrumentId: z.string().min(1).max(100),
   anchorTime: integer.nullable(),
@@ -60,6 +93,7 @@ const planSchema = z.object({
   sessionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   reason: z.string().max(4000),
   backgroundConfirmed: z.boolean(),
+  supportSelections: supportSelectionsSchema.optional(),
 });
 const fundsSchema = z.object({
   expectedGeneration: integer,
@@ -149,37 +183,31 @@ export async function createApp(
   });
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError)
-      return reply
-        .status(400)
-        .send({
-          error: error.issues
-            .map((i) => `${i.path.join(".")}: ${i.message}`)
-            .join("；"),
-          code: "INVALID_INPUT",
-        });
+      return reply.status(400).send({
+        error: error.issues
+          .map((i) => `${i.path.join(".")}: ${i.message}`)
+          .join("；"),
+        code: "INVALID_INPUT",
+      });
     if (error instanceof ApiError)
       return reply
         .status(error.statusCode)
         .send({ error: error.message, code: error.code });
     if ((error as { code?: string }).code === "SQLITE_BUSY")
-      return reply
-        .status(503)
-        .send({
-          error: "数据库暂忙，尚未确认保存，请重试",
-          code: "DATABASE_BUSY",
-        });
+      return reply.status(503).send({
+        error: "数据库暂忙，尚未确认保存，请重试",
+        code: "DATABASE_BUSY",
+      });
     const statusCode = (error as { statusCode?: number }).statusCode;
     if (statusCode && statusCode >= 400 && statusCode < 500)
       return reply
         .status(statusCode)
         .send({ error: "请求格式无效", code: "INVALID_REQUEST" });
     requestSafeLog(app, error);
-    return reply
-      .status(500)
-      .send({
-        error: "服务端处理失败；输入已保留，请重新读取核对",
-        code: "INTERNAL_ERROR",
-      });
+    return reply.status(500).send({
+      error: "服务端处理失败；输入已保留，请重新读取核对",
+      code: "INTERNAL_ERROR",
+    });
   });
   app.get("/api/health", async () => ({ ok: true, dataReady: false }));
   app.get("/api/session", async (request) => ({
@@ -241,6 +269,10 @@ export async function createApp(
     events: store.events(),
     screeningConfirmed: store.setting("screening_confirmed") === "true",
   }));
+  app.get(
+    "/api/market/status",
+    async () => options.marketStatus?.() ?? emptyMarketWorkerStatus(),
+  );
   app.get("/api/candidates", async () => {
     const candidates: Candidate[] = store.listInstruments().map((row) => {
       const bars = store.bars(row.instrument.id, "1D");
@@ -500,6 +532,10 @@ export async function createApp(
       throw new ApiError(400, "INVALID_SESSION_DATE", "交易日格式无效");
     return p;
   }
+  app.post("/api/plans/support-preview", async (request) => {
+    const input = supportPreviewSchema.parse(request.body);
+    return store.supportPreview(input, now(), "", input.sessionDate);
+  });
   app.post("/api/plans", async (request) =>
     command(request, () => store.createPlan(validatePlan(request.body), now())),
   );
@@ -520,8 +556,17 @@ export async function createApp(
   );
   app.post<{ Params: { id: string } }>(
     "/api/plans/:id/activate",
-    async (request) =>
-      command(request, () => {
+    async (request) => {
+      const current = store.plan(request.params.id);
+      const revisionReasons = store.supportRevisionReasons(current, now());
+      if (revisionReasons.some((reason) => reason.endsWith("REVISION_CHANGED")))
+        store.invalidateEvidence(
+          current.instrumentId,
+          revisionReasons[0],
+          now(),
+          true,
+        );
+      return command(request, () => {
         const p = store.plan(request.params.id);
         const expected = version.parse(request.body).expectedVersion;
         if (p.version !== expected)
@@ -554,6 +599,18 @@ export async function createApp(
             "RULES_UNCONFIRMED",
             "请先在设置中确认 C 类工程筛选预设",
           );
+        if (!p.supportSnapshot)
+          throw new ApiError(
+            422,
+            "SUPPORT_SNAPSHOT_REQUIRED",
+            "旧计划缺少支撑快照，请显式保存新版本",
+          );
+        if (!p.supportSnapshot.ready)
+          throw new ApiError(
+            422,
+            "SUPPORT_NOT_READY",
+            p.supportSnapshot.reasons.join("；"),
+          );
         const bars = store.bars(p.instrumentId, "1D");
         const indicators = calculateIndicators(bars);
         if (!indicators.screeningReady || !bars.at(-1))
@@ -562,7 +619,10 @@ export async function createApp(
             "DAILY_HISTORY_INCOMPLETE",
             "日线预热或完整性不足",
           );
-        if (!new Decimal(bars.at(-1)!.close).gt(p.upper))
+        if (
+          !p.supportSnapshot?.reference.close ||
+          !new Decimal(p.supportSnapshot.reference.close).gt(p.upper)
+        )
           throw new ApiError(
             422,
             "ABOVE_SUPPORT_EVIDENCE_REQUIRED",
@@ -575,7 +635,8 @@ export async function createApp(
             "固定合成回放的会话日期为 2026-10-09",
           );
         return store.activate(p.id, expected, now());
-      }),
+      });
+    },
   );
   app.post<{ Params: { id: string } }>(
     "/api/plans/:id/pause",
@@ -615,6 +676,31 @@ export async function createApp(
     async (request) => store.decisionInput(request.params.id),
   );
   app.get<{ Params: { id: string } }>(
+    "/api/events/:id/replay",
+    async (request) => {
+      const row = store.db
+        .prepare(
+          "SELECT i.json,e.input_hash FROM decision_inputs i JOIN decision_events e ON e.input_hash=i.hash WHERE e.id=?",
+        )
+        .get(request.params.id) as
+        { json: string; input_hash: string } | undefined;
+      if (!row) throw new ApiError(404, "NOT_FOUND", "找不到决策输入");
+      let snapshot: Record<string, unknown> = {};
+      try {
+        const parsed: unknown = JSON.parse(row.json);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+          snapshot = parsed as Record<string, unknown>;
+      } catch {
+        /* The auditor reports a corrupt archive using the original bytes. */
+      }
+      return auditDecisionInput({
+        snapshot,
+        expectedInputHash: row.input_hash,
+        serializedInput: row.json,
+      });
+    },
+  );
+  app.get<{ Params: { id: string } }>(
     "/api/events/:id/feedback",
     async (request) => ({
       revisions: store.feedbackHistory(request.params.id),
@@ -638,6 +724,12 @@ export async function createApp(
             actualPrice: positive.optional(),
             actualQuantity: integer.positive().optional(),
             actualTime: integer.optional(),
+            expectedRevisionId: z
+              .string()
+              .min(1)
+              .max(120)
+              .nullable()
+              .optional(),
           })
           .parse(request.body);
         store.feedback(request.params.id, input, now());

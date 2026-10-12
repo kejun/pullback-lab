@@ -11,8 +11,15 @@ import type {
   Plan,
   PlanInput,
   RiskResult,
+  FeedbackInput,
+  FeedbackRevision,
+  FeedbackDeviationCode,
+  SupportPreviewInput,
+  SupportSnapshot,
 } from "../../packages/contracts/index.js";
 import { solveRisk } from "../../packages/domain/risk.js";
+import { freezeSupport } from "../../packages/domain/plan-support.js";
+import { initializeDatabase } from "./migrations.js";
 
 export class ApiError extends Error {
   constructor(
@@ -68,33 +75,12 @@ export class Store {
   constructor(path = ":memory:") {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.db = new Database(path);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("foreign_keys = ON");
-    this.db.pragma("busy_timeout = 5000");
-    this.db.pragma("synchronous = FULL");
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS instruments(id TEXT PRIMARY KEY, json TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS bars(instrument_id TEXT NOT NULL, period TEXT NOT NULL, bar_id TEXT NOT NULL, time INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY(instrument_id,period,bar_id));
-      CREATE INDEX IF NOT EXISTS bars_timeline ON bars(instrument_id,period,time);
-      CREATE TABLE IF NOT EXISTS plans(id TEXT PRIMARY KEY, version INTEGER NOT NULL, json TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS plan_versions(plan_id TEXT NOT NULL, version INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY(plan_id,version));
-      CREATE TABLE IF NOT EXISTS attempts(id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, plan_version INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, json TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS account_snapshots(generation INTEGER PRIMARY KEY, json TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS reservations(plan_id TEXT PRIMARY KEY, allocation_order INTEGER NOT NULL, json TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS decision_inputs(hash TEXT PRIMARY KEY, json TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS decision_events(seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, attempt_id TEXT NOT NULL, type TEXT NOT NULL, event_key TEXT NOT NULL UNIQUE, input_hash TEXT NOT NULL REFERENCES decision_inputs(hash), json TEXT NOT NULL);
-      CREATE UNIQUE INDEX IF NOT EXISTS one_technical_per_attempt ON decision_events(attempt_id) WHERE type='TECHNICAL_TRIGGERED';
-      CREATE UNIQUE INDEX IF NOT EXISTS one_entry_per_attempt ON decision_events(attempt_id) WHERE type IN ('ENTRY_TRIGGERED','HISTORICAL_TRIGGERED');
-      CREATE TABLE IF NOT EXISTS notifications(event_id TEXT PRIMARY KEY REFERENCES decision_events(id), created_at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS notification_ack(event_id TEXT PRIMARY KEY REFERENCES decision_events(id), read_at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS record_revisions(id TEXT PRIMARY KEY, event_id TEXT NOT NULL REFERENCES decision_events(id), created_at INTEGER NOT NULL, json TEXT NOT NULL);
-      CREATE INDEX IF NOT EXISTS feedback_order ON record_revisions(event_id,created_at);
-      CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS command_results(key TEXT PRIMARY KEY, route TEXT NOT NULL, input_hash TEXT NOT NULL, json TEXT NOT NULL);
-      INSERT OR IGNORE INTO schema_migrations VALUES(1, CAST(unixepoch('subsec') * 1000 AS INTEGER));
-    `);
+    try {
+      initializeDatabase(this.db);
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
   close() {
     this.db.close();
@@ -163,6 +149,114 @@ export class Store {
         .all(id, period) as { json: string }[]
     ).map((row) => JSON.parse(row.json));
   }
+  private supportBars(
+    id: string,
+    knownAt: number,
+    sessionDate?: string,
+  ): Bar[] {
+    return this.bars(id, "1D").filter(
+      (bar) =>
+        bar.final &&
+        bar.receivedAt <= knownAt &&
+        (!sessionDate ||
+          new Date(bar.time * 1000).toISOString().slice(0, 10) < sessionDate),
+    );
+  }
+  private revision(value: unknown): string {
+    return createHash("sha256").update(json(value)).digest("hex");
+  }
+  supportPreview(
+    input: Omit<SupportPreviewInput, "supportSelections"> & {
+      supportSelections?: SupportPreviewInput["supportSelections"];
+    },
+    now: number,
+    reason = "",
+    sessionDate?: string,
+  ): SupportSnapshot {
+    const instrument = this.instrument(input.instrumentId).instrument;
+    const bars = this.supportBars(input.instrumentId, now, sessionDate);
+    // Only the server-installed synthetic fixture has a verified history today.
+    // Real feed metadata is kept in quarantine until independent validation exists.
+    const synthetic =
+      instrument.id.startsWith("DEMO-") &&
+      bars.length > 0 &&
+      bars.every(
+        (bar) =>
+          bar.id.startsWith("synthetic:") &&
+          (bar as Bar & { synthetic?: boolean }).synthetic === true,
+      );
+    return freezeSupport(
+      { ...input, supportSelections: input.supportSelections ?? [] },
+      instrument,
+      {
+        bars,
+        historyComplete: synthetic,
+        adjustmentVerified: synthetic,
+        synthetic,
+        dataRevision: this.revision(bars),
+        instrumentRevision: this.revision(instrument),
+      },
+      now,
+      reason,
+    );
+  }
+  /** Compare all daily inputs, including EMA seeds and the AVWAP anchor, with the frozen version. */
+  supportRevisionReasons(plan: Plan, now: number): string[] {
+    const frozen = plan.supportSnapshot;
+    if (!frozen || frozen.schemaVersion !== 2)
+      return ["SUPPORT_SNAPSHOT_REQUIRED"];
+    const reasons: string[] = [];
+    const instrument = this.instrument(plan.instrumentId).instrument;
+    if (this.revision(instrument) !== frozen.instrumentRevision)
+      reasons.push("INSTRUMENT_REVISION_CHANGED");
+    const daily = this.bars(plan.instrumentId, "1D").filter(
+      (bar) =>
+        bar.final &&
+        bar.receivedAt <= now &&
+        new Date(bar.time * 1000).toISOString().slice(0, 10) < plan.sessionDate,
+    );
+    if (this.revision(daily) !== frozen.dataRevision)
+      reasons.push("PLAN_DATA_REVISION_CHANGED");
+    return reasons;
+  }
+  invalidateEvidence(
+    instrumentId: string,
+    reason: string,
+    now: number,
+    onlyChanged = false,
+  ) {
+    return this.transaction(() => {
+      for (const p of this.plans()) {
+        if (
+          p.instrumentId !== instrumentId ||
+          !["WAIT_RETEST", "ARMED"].includes(p.status)
+        )
+          continue;
+        const changed = onlyChanged
+          ? this.supportRevisionReasons(p, now)
+          : [reason];
+        if (!changed.length) continue;
+        const planReason = changed[0];
+        this.writePlan({ ...p, status: "DATA_PAUSED", updatedAt: now });
+        this.insertEvent(
+          p,
+          "DATA_PAUSED",
+          `${p.attemptId}:evidence:${planReason}`,
+          now,
+          now,
+          "计划依据已变化，请核对数据并保存新版本",
+          changed,
+          null,
+          true,
+          {
+            planVersion: this.planVersion(p),
+            reason: planReason,
+            synthetic: p.instrumentId.startsWith("DEMO-"),
+          },
+        );
+      }
+    });
+  }
   plans(): Plan[] {
     return (
       this.db.prepare("SELECT json FROM plans ORDER BY rowid DESC").all() as {
@@ -177,9 +271,7 @@ export class Store {
     if (!p) throw new ApiError(404, "NOT_FOUND", "找不到该计划");
     return p;
   }
-  planVersion(
-    plan: Plan,
-  ): Plan & {
+  planVersion(plan: Plan): Plan & {
     instrument: Instrument;
     previousDailyBar: Bar | null;
     anchorBar: Bar | null;
@@ -210,6 +302,12 @@ export class Store {
       this.instrument(input.instrumentId);
       const p: Plan = {
         ...input,
+        supportSnapshot: this.supportPreview(
+          input,
+          now,
+          input.reason,
+          input.sessionDate,
+        ),
         id: randomUUID(),
         version: 1,
         status: "DRAFT",
@@ -224,22 +322,21 @@ export class Store {
     });
   }
   private savePlanVersion(p: Plan, now: number) {
-    const bars = this.bars(p.instrumentId, "1D");
+    const bars = this.supportBars(p.instrumentId, now, p.sessionDate);
     const anchor = bars.find((bar) => bar.time === p.anchorTime);
-    this.db
-      .prepare("INSERT INTO plan_versions VALUES(?,?,?)")
-      .run(
-        p.id,
-        p.version,
-        json({
-          ...p,
-          frozenAt: now,
-          anchorBar: anchor ?? null,
-          previousDailyBar: bars.at(-1) ?? null,
-          instrument: this.instrument(p.instrumentId).instrument,
-          algorithmVersion: "pullback-c01-c07-v1",
-        }),
-      );
+    this.db.prepare("INSERT INTO plan_versions VALUES(?,?,?)").run(
+      p.id,
+      p.version,
+      json({
+        ...p,
+        frozenAt: now,
+        anchorBar: anchor ?? null,
+        previousDailyBar: bars.at(-1) ?? null,
+        instrument: this.instrument(p.instrumentId).instrument,
+        algorithmVersion: "pullback-c01-c07-v1",
+        supportDailyBars: bars,
+      }),
+    );
   }
   updatePlan(
     id: string,
@@ -260,6 +357,12 @@ export class Store {
       this.release(id);
       const p: Plan = {
         ...input,
+        supportSnapshot: this.supportPreview(
+          input,
+          now,
+          input.reason,
+          input.sessionDate,
+        ),
         id,
         version: old.version + 1,
         status: "DRAFT",
@@ -406,6 +509,19 @@ export class Store {
     return this.transaction(() => {
       const p = this.plan(id);
       this.assertVersion(p, expected);
+      const supportReasons = this.supportRevisionReasons(p, now);
+      if (supportReasons.length)
+        throw new ApiError(
+          422,
+          supportReasons[0],
+          "支撑依据缺失或已修订，请显式保存新的计划版本",
+        );
+      if (!p.supportSnapshot?.ready)
+        throw new ApiError(
+          422,
+          "SUPPORT_NOT_READY",
+          p.supportSnapshot?.reasons.join("；") ?? "支撑快照缺失",
+        );
       if (activeStatuses.includes(p.status)) {
         if (p.attemptId && p.status === "WAIT_RETEST")
           return {
@@ -434,20 +550,18 @@ export class Store {
         approvedQuantity: risk.quantity,
         updatedAt: now,
       };
-      this.db
-        .prepare("INSERT INTO attempts VALUES(?,?,?,?,?)")
-        .run(
-          attemptId,
-          id,
-          p.version,
-          0,
-          json({
-            startedAt: now,
-            evidenceEpoch: randomUUID(),
-            kind: "SYNTHETIC_REPLAY",
-            version: p.version,
-          }),
-        );
+      this.db.prepare("INSERT INTO attempts VALUES(?,?,?,?,?)").run(
+        attemptId,
+        id,
+        p.version,
+        0,
+        json({
+          startedAt: now,
+          evidenceEpoch: randomUUID(),
+          kind: "SYNTHETIC_REPLAY",
+          version: p.version,
+        }),
+      );
       this.writePlan(updated);
       const maxOrder = this.reservations().reduce(
         (m, r) => Math.max(m, r.allocationOrder),
@@ -553,8 +667,10 @@ export class Store {
     const encoded = json(snapshot);
     const hash = createHash("sha256").update(encoded).digest("hex");
     this.db
-      .prepare("INSERT OR IGNORE INTO decision_inputs VALUES(?,?)")
-      .run(hash, encoded);
+      .prepare(
+        "INSERT INTO decision_inputs SELECT ?,? WHERE NOT EXISTS(SELECT 1 FROM decision_inputs WHERE hash=?)",
+      )
+      .run(hash, encoded, hash);
     return hash;
   }
   private insertEvent(
@@ -628,8 +744,7 @@ export class Store {
         .get(attemptId) as { consumed: number } | undefined;
       if (!attempt)
         throw new ApiError(409, "ATTEMPT_MISSING", "当前计划尚未启用");
-      if (attempt.consumed)
-        return this.events().filter((e) => e.attemptId === attemptId);
+      if (attempt.consumed) return this.eventsForAttempt(attemptId);
       if (!["WAIT_RETEST", "ARMED"].includes(p.status))
         throw new ApiError(409, "ATTEMPT_INACTIVE", "当前尝试已经暂停或结束");
       const risk = this.replayRisk(
@@ -735,12 +850,11 @@ export class Store {
       const p = this.plan(id);
       this.assertVersion(p, expected);
       if (
-        this.events().some(
-          (e) =>
-            e.attemptId === p.attemptId && e.type === "TECHNICAL_TRIGGERED",
+        this.eventsForAttempt(p.attemptId ?? `draft:${p.id}`).some(
+          (e) => e.type === "TECHNICAL_TRIGGERED",
         )
       )
-        return this.events().filter((e) => e.attemptId === p.attemptId);
+        return this.eventsForAttempt(p.attemptId ?? `draft:${p.id}`);
       if (["INVALID", "EXPIRED", "USER_PAUSED"].includes(status))
         this.release(id);
       this.writePlan({ ...p, status, updatedAt: now });
@@ -774,12 +888,21 @@ export class Store {
         );
       seq = row.seq;
     }
+    return this.readEvents("e.seq>?", [seq]);
+  }
+  eventsForAttempt(attemptId: string): DecisionEvent[] {
+    return this.readEvents("e.attempt_id=?", [attemptId]);
+  }
+  private readEvents(
+    where: string,
+    params: (string | number)[],
+  ): DecisionEvent[] {
     return (
       this.db
         .prepare(
-          "SELECT e.json,a.read_at,(SELECT r.json FROM record_revisions r WHERE r.event_id=e.id ORDER BY r.rowid DESC LIMIT 1) feedback_json FROM decision_events e LEFT JOIN notification_ack a ON a.event_id=e.id WHERE e.seq>? ORDER BY e.seq",
+          `SELECT e.json,a.read_at,(SELECT r.json FROM record_revisions r WHERE r.event_id=e.id ORDER BY r.rowid DESC LIMIT 1) feedback_json FROM decision_events e LEFT JOIN notification_ack a ON a.event_id=e.id WHERE ${where} ORDER BY e.seq`,
         )
-        .all(seq) as {
+        .all(...params) as {
         json: string;
         read_at: number | null;
         feedback_json: string | null;
@@ -797,21 +920,11 @@ export class Store {
       .run(id, now);
   }
   event(id: string): DecisionEvent {
-    const e = this.events().find((e) => e.id === id);
+    const e = this.readEvents("e.id=?", [id])[0];
     if (!e) throw new ApiError(404, "NOT_FOUND", "找不到该事件");
     return e;
   }
-  feedback(
-    id: string,
-    input: {
-      kind: "TAKEN" | "SKIPPED";
-      note: string;
-      actualPrice?: string;
-      actualQuantity?: number;
-      actualTime?: number;
-    },
-    now: number,
-  ) {
+  feedback(id: string, input: FeedbackInput, now: number) {
     return this.transaction(() => {
       const event = this.event(id);
       if (!["ENTRY_TRIGGERED", "HISTORICAL_TRIGGERED"].includes(event.type))
@@ -822,14 +935,40 @@ export class Store {
         );
       const oldRows = this.db
         .prepare(
-          "SELECT json FROM record_revisions WHERE event_id=? ORDER BY rowid",
+          "SELECT id,json FROM record_revisions WHERE event_id=? ORDER BY rowid",
         )
-        .all(id) as { json: string }[];
+        .all(id) as { id: string; json: string }[];
       const old = oldRows.at(-1);
-      if (old && old.json === json(input)) return;
+      const prior = old ? (JSON.parse(old.json) as FeedbackInput) : null;
+      const fields = [
+        "kind",
+        "note",
+        "actualPrice",
+        "actualQuantity",
+        "actualTime",
+      ] as const;
+      if (prior && fields.every((field) => prior[field] === input[field]))
+        return;
+      if (
+        input.expectedRevisionId !== undefined &&
+        input.expectedRevisionId !== (old?.id ?? null)
+      )
+        throw new ApiError(
+          409,
+          "FEEDBACK_REVISION_CONFLICT",
+          "记录已被其他页面更新；输入已保留，请重新读取后再保存",
+        );
+      const { expectedRevisionId: _expectedRevisionId, ...record } = input;
+      const revision: FeedbackRevision = {
+        ...record,
+        id: randomUUID(),
+        recordedAt: now,
+        deviationCodes: this.feedbackDeviations(event, input),
+        assessmentVersion: "feedback-v1",
+      };
       this.db
         .prepare("INSERT INTO record_revisions VALUES(?,?,?,?)")
-        .run(randomUUID(), id, now, json(input));
+        .run(revision.id, id, now, json(revision));
       const p = this.plan(event.planId);
       // Historical corrections do not mutate a newer attempt's runtime state.
       if (p.attemptId === event.attemptId)
@@ -860,15 +999,52 @@ export class Store {
       this.readEvent(id, now);
     });
   }
-  feedbackHistory(id: string): unknown[] {
+  private feedbackDeviations(
+    event: DecisionEvent,
+    input: FeedbackInput,
+  ): FeedbackDeviationCode[] {
+    const snapshot = this.decisionInput(event.id);
+    const plan = (snapshot.planVersion ?? snapshot.plan) as
+      (Plan & { instrument?: Instrument }) | undefined;
+    const codes: FeedbackDeviationCode[] = [];
+    if (input.kind !== "TAKEN") return codes;
+    if (
+      input.actualPrice &&
+      plan &&
+      (new Decimal(input.actualPrice).lt(plan.entryMin) ||
+        new Decimal(input.actualPrice).gt(plan.entryMax))
+    )
+      codes.push("ACTUAL_PRICE_OUTSIDE_ENTRY_RANGE");
+    if (input.actualQuantity !== undefined) {
+      if (event.quantity !== null && input.actualQuantity > event.quantity)
+        codes.push("ACTUAL_QUANTITY_ABOVE_APPROVED");
+      const rules = plan?.instrument;
+      if (
+        rules &&
+        (input.actualQuantity < rules.qMin ||
+          (input.actualQuantity - rules.qMin) % rules.qStep !== 0)
+      )
+        codes.push("ACTUAL_QUANTITY_RULE_MISMATCH");
+    }
+    if (input.actualTime !== undefined && input.actualTime < event.time)
+      codes.push("ACTUAL_TIME_BEFORE_SIGNAL");
+    return codes;
+  }
+  feedbackHistory(id: string): FeedbackRevision[] {
     this.event(id);
     return (
       this.db
         .prepare(
-          "SELECT json,created_at FROM record_revisions WHERE event_id=? ORDER BY rowid",
+          "SELECT id,json,created_at FROM record_revisions WHERE event_id=? ORDER BY rowid",
         )
-        .all(id) as { json: string; created_at: number }[]
-    ).map((r) => ({ ...JSON.parse(r.json), recordedAt: r.created_at }));
+        .all(id) as { id: string; json: string; created_at: number }[]
+    ).map((r) => ({
+      deviationCodes: [],
+      assessmentVersion: "legacy-unassessed" as const,
+      ...JSON.parse(r.json),
+      id: r.id,
+      recordedAt: r.created_at,
+    }));
   }
   /** Raw snapshots are immutable; this read never resolves current bars or funds. */
   decisionInput(eventId: string): Record<string, unknown> {

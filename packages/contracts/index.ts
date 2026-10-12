@@ -57,6 +57,61 @@ export interface Capability {
   source: string;
   checkedAt: number | null;
 }
+export type SupportSelection =
+  | { source: "EMA9" | "EMA21" | "EMA50" | "AVWAP" }
+  | { source: "HORIZONTAL"; id: string; price: string; label: string };
+export type SupportFamily = "EMA" | "AVWAP" | "HORIZONTAL";
+export interface SupportSnapshot {
+  schemaVersion: 2;
+  status: "READY" | "INCOMPLETE";
+  ready: boolean;
+  reasons: string[];
+  selectedAt: number;
+  selectionReason: string;
+  primarySupport: string;
+  anchorTime: number | null;
+  anchorBarId: string | null;
+  baseInterval: "1D";
+  priceFormula: "HLC3";
+  priceBasis: "SPLIT_ADJUSTED";
+  session: "REGULAR";
+  reference: {
+    previousDailyBarId: string | null;
+    previousDailyTime: number | null;
+    close: string | null;
+    atr14: string | null;
+    tick: string;
+  };
+  tolerance: string | null;
+  suggestedLower: string | null;
+  suggestedUpper: string | null;
+  lines: {
+    id: string;
+    source: SupportSelection["source"];
+    family: SupportFamily;
+    label: string;
+    price: string | null;
+    distance: string | null;
+    withinTolerance: boolean;
+    reasons: string[];
+    /** Time the supporting input became known, UTC milliseconds. */
+    dataCutoff: number | null;
+  }[];
+  matchedFamilies: SupportFamily[];
+  adjustmentVersion: string | null;
+  dataRevision: string;
+  instrumentRevision: string;
+  seedStart: number | null;
+  knownAt: number | null;
+  synthetic: boolean;
+}
+export interface SupportPreviewInput {
+  instrumentId: string;
+  anchorTime: number | null;
+  primarySupport: string;
+  supportSelections: SupportSelection[];
+  sessionDate?: string;
+}
 export interface PlanInput {
   instrumentId: string;
   anchorTime: number | null;
@@ -70,8 +125,10 @@ export interface PlanInput {
   sessionDate: string;
   reason: string;
   backgroundConfirmed: boolean;
+  supportSelections?: SupportSelection[];
 }
 export interface Plan extends PlanInput {
+  supportSnapshot?: SupportSnapshot;
   id: string;
   version: number;
   status: string;
@@ -79,6 +136,28 @@ export interface Plan extends PlanInput {
   approvedQuantity: number;
   createdAt: number;
   updatedAt: number;
+}
+export type FeedbackDeviationCode =
+  | "ACTUAL_PRICE_OUTSIDE_ENTRY_RANGE"
+  | "ACTUAL_QUANTITY_ABOVE_APPROVED"
+  | "ACTUAL_QUANTITY_RULE_MISMATCH"
+  | "ACTUAL_TIME_BEFORE_SIGNAL";
+export interface FeedbackInput {
+  kind: "TAKEN" | "SKIPPED";
+  note: string;
+  actualPrice?: string;
+  actualQuantity?: number;
+  actualTime?: number;
+  expectedRevisionId?: string | null;
+}
+export interface FeedbackRevision extends Omit<
+  FeedbackInput,
+  "expectedRevisionId"
+> {
+  id: string;
+  recordedAt: number;
+  deviationCodes: FeedbackDeviationCode[];
+  assessmentVersion: "feedback-v1" | "legacy-unassessed";
 }
 export interface Funds {
   generation: number;
