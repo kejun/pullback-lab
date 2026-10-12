@@ -10,6 +10,7 @@ const scenarios = [
   "operations",
   "recovery",
   "action-evidence",
+  "market-sampling",
 ] as const;
 
 export default defineConfig({
@@ -46,6 +47,9 @@ export default defineConfig({
       PULLBACK_PASSWORD: "e2e-only-password",
       PULLBACK_DEMO: "1",
       NODE_ENV: "test",
+      PULLBACK_MARKET_WORKER: "0",
+      PULLBACK_MINUTE_SYMBOLS: name === "market-sampling" ? "SAMPLE.US" : "",
+      MARKET_SAMPLING_E2E: name === "market-sampling" ? "1" : "0",
       ACTION_EVIDENCE_E2E: name === "action-evidence" ? "1" : "0",
     },
   })),

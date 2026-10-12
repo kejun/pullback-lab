@@ -3290,3 +3290,14 @@ details > summary {
   .action-evidence { padding: 16px; }
   .evidence-facts > div, .evidence-change dl > div { grid-template-columns: 1fr; gap: 2px; }
 }
+
+.sampling-streams {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+.sampling-stream {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  min-width: 0;
+}
