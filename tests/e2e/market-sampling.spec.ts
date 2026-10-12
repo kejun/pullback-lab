@@ -1,5 +1,33 @@
 import { readFile } from "node:fs/promises";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
+
+// Center within the actual clipping ancestor: browser scrollIntoViewIfNeeded
+// can leave a fractional edge clipped, especially after a viewport resize.
+async function revealCard(card: Locator) {
+  await card.evaluate((element) => {
+    const container = element.closest(".drawer-body")!;
+    const rect = element.getBoundingClientRect(),
+      clip = container.getBoundingClientRect();
+    container.scrollTop +=
+      rect.top - clip.top - (container.clientHeight - rect.height) / 2;
+  });
+  await expect
+    .poll(() =>
+      card.evaluate((element) => {
+        const rect = element.getBoundingClientRect(),
+          clip = element.closest(".drawer-body")!.getBoundingClientRect();
+        return {
+          inside:
+            rect.top >= clip.top &&
+            rect.bottom <= clip.bottom &&
+            rect.left >= clip.left &&
+            rect.right <= clip.right,
+          fits: element.scrollWidth <= element.clientWidth,
+        };
+      }),
+    )
+    .toEqual({ inside: true, fits: true });
+}
 
 test("period evidence remains distinct across refresh and mobile layout", async ({
   page,
@@ -51,20 +79,7 @@ test("period evidence remains distinct across refresh and mobile layout", async 
       ["one", one],
       ["five", five],
     ] as const) {
-      await card.scrollIntoViewIfNeeded();
-      const geometry = await card.evaluate((element) => {
-        const rect = element.getBoundingClientRect();
-        const clip = element.closest(".drawer-body")!.getBoundingClientRect();
-        return {
-          inside:
-            rect.top >= clip.top &&
-            rect.bottom <= clip.bottom &&
-            rect.left >= clip.left &&
-            rect.right <= clip.right,
-          fits: element.scrollWidth <= element.clientWidth,
-        };
-      });
-      expect(geometry).toEqual({ inside: true, fits: true });
+      await revealCard(card);
       await card.screenshot({
         path: test.info().outputPath(`minute-sampling-${viewport}-${name}.png`),
       });
@@ -174,20 +189,7 @@ test("archives load on demand, preserve raw text and export the selected compari
   const capture = async (viewport: string) => {
     for (const name of ["summary", "comparison"]) {
       const box = archive.locator(`.receipt-${name}`);
-      await box.scrollIntoViewIfNeeded();
-      expect(
-        await box.evaluate((node) => {
-          const rect = node.getBoundingClientRect(),
-            clip = node.closest(".drawer-body")!.getBoundingClientRect();
-          return (
-            rect.top >= clip.top &&
-            rect.bottom <= clip.bottom &&
-            rect.left >= clip.left &&
-            rect.right <= clip.right &&
-            node.scrollWidth <= node.clientWidth
-          );
-        }),
-      ).toBe(true);
+      await revealCard(box);
       await box.screenshot({
         path: test
           .info()
