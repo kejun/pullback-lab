@@ -90,7 +90,7 @@ describe("verified online backup", () => {
       .run();
     try {
       expect(await backupDatabase(source, target)).toEqual({
-        schemaVersion: 8,
+        schemaVersion: 9,
       });
     } finally {
       writer.exec("ROLLBACK");
@@ -149,7 +149,7 @@ describe("verified online backup", () => {
     expect(
       results.find((result) => result.status === "rejected"),
     ).toMatchObject({ reason: { code: "BACKUP_TARGET_EXISTS" } });
-    expect(schema(open(target))).toEqual({ version: 8 });
+    expect(schema(open(target))).toEqual({ version: 9 });
     noPartials(dir);
   });
 
@@ -263,7 +263,7 @@ describe("offline new-path restore", () => {
       rows: store.db.prepare(`SELECT * FROM ${table}`).all(),
     }));
     await expect(restoreDatabase(source, target)).resolves.toEqual({
-      schemaVersion: 8,
+      schemaVersion: 9,
     });
     const restored = current(target);
     expect(count(restored.db, "sessions")).toBe(0);
@@ -328,12 +328,12 @@ describe("offline new-path restore", () => {
     legacy.close();
     const original = readFileSync(source);
     await expect(restoreDatabase(source, target)).resolves.toEqual({
-      schemaVersion: 8,
+      schemaVersion: 9,
     });
     expect(readFileSync(source)).toEqual(original);
     expect(schema(open(source))).toEqual({ version: 1 });
     const restored = open(target);
-    expect(schema(restored)).toEqual({ version: 8 });
+    expect(schema(restored)).toEqual({ version: 9 });
     expect(restored.prepare("SELECT json FROM plan_versions").get()).toEqual({
       json: '{"kept":"exact"}',
     });
@@ -479,7 +479,7 @@ describe("period watermark migration", () => {
     const backup = await backupBeforeMigration(path, join(dir, "backups"));
     expect(backup?.schemaVersion).toBe(7);
     const store = current(path);
-    expect(schema(store.db)).toEqual({ version: 8 });
+    expect(schema(store.db)).toEqual({ version: 9 });
     const row = store.db
       .prepare("SELECT * FROM market_worker_watermarks")
       .get() as { instrument_id: string; period: string; json: string };
@@ -492,5 +492,84 @@ describe("period watermark migration", () => {
       saved.prepare("SELECT json FROM market_worker_watermarks").get(),
     ).toEqual({ json: JSON.stringify(daily) });
     expect(store.db.pragma("foreign_key_check")).toEqual([]);
+  });
+});
+
+describe("provider receipt query migration", () => {
+  it("backs up v8 payload bytes and hashes, preserving unknown request periods and append-only guards", async () => {
+    const dir = directory(),
+      path = join(dir, "v8.sqlite");
+    const before = old(path, 8);
+    before.exec(`INSERT INTO market_worker_epochs(epoch,started_at) VALUES(1,10);
+      INSERT INTO market_provider_receipts(epoch,instrument_id,source,received_at,observed_at,provider_timestamp,historical,payload_hash,payload_json,status,reason)
+      VALUES(1,'US:TEST.US','synthetic',20,20,10,1,'legacy-hash','{ "period": "1m", "symbol": "TEST.US" }','QUARANTINED','UNKNOWN'),
+      (1,'US:TEST.US','synthetic',20,20,10,1,'bad-hash','invalid-json','QUARANTINED','UNKNOWN');`);
+    const original = before
+      .prepare("SELECT * FROM market_provider_receipts ORDER BY sequence")
+      .all();
+    before.close();
+    const backup = await backupBeforeMigration(path, join(dir, "backups"));
+    expect(backup?.schemaVersion).toBe(8);
+    const saved = open(backup!.path);
+    expect(
+      saved
+        .prepare("SELECT * FROM market_provider_receipts ORDER BY sequence")
+        .all(),
+    ).toEqual(original);
+    const store = current(path);
+    expect(schema(store.db)).toEqual({ version: 9 });
+    expect(
+      store.db
+        .prepare("SELECT * FROM market_provider_receipts ORDER BY sequence")
+        .all(),
+    ).toEqual(
+      original.map((row) => ({ ...(row as object), requested_period: null })),
+    );
+    expect(() =>
+      store.db.exec(
+        "UPDATE market_provider_receipts SET requested_period='1m'",
+      ),
+    ).toThrow("IMMUTABLE_PROVIDER_RECEIPT");
+    expect(() => store.db.exec("DELETE FROM market_provider_receipts")).toThrow(
+      "IMMUTABLE_PROVIDER_RECEIPT",
+    );
+    const plan = store.db
+      .prepare(
+        `EXPLAIN QUERY PLAN SELECT sequence FROM market_provider_receipts
+      WHERE instrument_id=? AND requested_period IS ? AND sequence<=? AND sequence<? ORDER BY sequence DESC LIMIT 21`,
+      )
+      .all("US:TEST.US", null, 100, 100);
+    expect(JSON.stringify(plan)).toContain("market_provider_stream_sequence");
+    const { RECEIPT_SYMBOL_SQL, RECEIPT_PERIOD_SQL } =
+      await import("../provider-receipt-schema.js");
+    const priorPlan = store.db
+      .prepare(
+        `EXPLAIN QUERY PLAN SELECT sequence FROM market_provider_receipts
+      WHERE instrument_id=? AND source=? AND ${RECEIPT_SYMBOL_SQL}=? AND ${RECEIPT_PERIOD_SQL}=?
+      AND provider_timestamp=? AND sequence<? ORDER BY sequence DESC LIMIT 1`,
+      )
+      .all("US:TEST.US", "synthetic", "TEST.US", "1m", 10, 100);
+    expect(JSON.stringify(priorPlan)).toContain("market_provider_predecessor");
+  });
+
+  it("rolls back the new column and indexes if migration recording fails", () => {
+    const db = old(join(directory(), "failed-v9.sqlite"), 8);
+    db.exec(
+      "CREATE TRIGGER fail_v9 BEFORE INSERT ON schema_migrations WHEN NEW.version=9 BEGIN SELECT RAISE(ABORT,'synthetic migration failure'); END",
+    );
+    expect(() => runMigrations(db)).toThrow("synthetic migration failure");
+    expect(schema(db)).toEqual({ version: 8 });
+    expect(
+      (
+        db.pragma("table_info(market_provider_receipts)") as { name: string }[]
+      ).some((c) => c.name === "requested_period"),
+    ).toBe(false);
+    expect(
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE name='market_provider_stream_sequence'",
+        )
+        .get(),
+    ).toBeUndefined();
   });
 });

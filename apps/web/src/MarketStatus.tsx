@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import { ProviderReceipts } from "./ProviderReceipts";
 
 interface WorkerStatus {
   state: "DISABLED" | "IDLE" | "POLLING" | "BACKOFF" | "STOPPED";
@@ -139,7 +140,7 @@ export function MarketStatus() {
               "采样状态不代表行情已通过验证。"}
           </p>
           <dl className="detail-list">
-            <dt>最近轮询完成</dt>
+            <dt>最近成功轮询</dt>
             <dd>{when(status.lastSuccessAt)}</dd>
             <dt>下次采样</dt>
             <dd>{when(status.nextPollAt)}</dd>
@@ -238,12 +239,38 @@ export function MarketStatus() {
                             stream.lastQuarantineReason}
                         </p>
                       )}
+                      <ProviderReceipts
+                        instrumentId={stream.instrumentId}
+                        period={stream.period}
+                      />
                     </article>
                   );
                 })}
               </div>
             </details>
           )}
+          {status.watermarks
+            .filter(
+              (mark) =>
+                !status.streams.some(
+                  (stream) => stream.instrumentId === mark.instrumentId,
+                ),
+            )
+            .filter(
+              (mark, index, all) =>
+                all.findIndex(
+                  (other) => other.instrumentId === mark.instrumentId,
+                ) === index,
+            )
+            .map((mark) => (
+              <div key={mark.instrumentId} className="sampling-stream">
+                <strong>{mark.instrumentId} · 旧版采样存档</strong>
+                <ProviderReceipts
+                  instrumentId={mark.instrumentId}
+                  period="unknown"
+                />
+              </div>
+            ))}
           <details className="snapshot-details">
             <summary>查看采样来源</summary>
             <p className="breakable">{status.source || "未配置"}</p>

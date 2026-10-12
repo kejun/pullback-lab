@@ -30,6 +30,7 @@ import {
 import { registerPriceProposalRoutes } from "./price-proposal.js";
 import { registerOperationsRoutes } from "./operations-status.js";
 import { registerActionEvidenceRoutes } from "./action-evidence-query.js";
+import { registerProviderReceiptRoutes } from "./provider-receipt-query.js";
 import { auditDecisionInput } from "./audit-replay.js";
 import {
   BoundedEventWriter,
@@ -180,7 +181,11 @@ export async function createApp(
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "same-origin");
     reply.header("X-Frame-Options", "DENY");
-    if (!request.url.startsWith("/api/")) return;
+    // The router resolves percent-encoded paths before onRequest runs, while
+    // request.url is still raw. Apply security to the route that will execute.
+    const routeUrl = request.routeOptions.url;
+    if (!routeUrl?.startsWith("/api/") && !request.url.startsWith("/api/"))
+      return;
     reply.header("Cache-Control", "no-store");
     const origin = request.headers.origin;
     const requestOrigin = `${request.protocol}://${request.headers.host}`;
@@ -191,7 +196,7 @@ export async function createApp(
       throw new ApiError(403, "CSRF_REJECTED", "写请求缺少应用来源标记");
     if (
       ["/api/session", "/api/login", "/api/health"].includes(
-        request.url.split("?")[0],
+        routeUrl ?? "",
       )
     )
       return;
@@ -233,6 +238,7 @@ export async function createApp(
   });
   registerPriceProposalRoutes(app, store);
   registerActionEvidenceRoutes(app, store);
+  registerProviderReceiptRoutes(app, store);
   registerOperationsRoutes(app, store, {
     now,
     secureCookies: options.secureCookies,
