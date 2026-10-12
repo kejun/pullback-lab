@@ -11,6 +11,7 @@ import {
   type TriggerEvent,
 } from "../../packages/domain/trigger.js";
 import { ApiError, type Store } from "./store.js";
+import { calculateIndicators } from "../../packages/domain/indicators.js";
 
 /** No public route accepts these inputs: only installed synthetic fixtures enter this runtime. */
 export type RuntimeInput = AttemptInput extends infer I
@@ -38,6 +39,9 @@ interface RuntimeRow {
 }
 export interface RuntimeProgress {
   synthetic: true;
+  template: AttemptConfig["template"];
+  activatedAt: number;
+  recoveredFromAttemptId: string | null;
   attemptId: string;
   planId: string;
   planVersion: number;
@@ -66,6 +70,13 @@ export interface RuntimeCommand {
 export interface RuntimeStepCommand extends RuntimeCommand {
   expectedStep: number;
   count?: number;
+}
+export interface RuntimeRecoveryCommand {
+  expectedVersion: number;
+  /** The current plan may have no attempt after an explicit version edit. */
+  expectedAttemptId: string | null;
+  sourceAttemptId: string;
+  expectedStep: number;
 }
 interface RuntimeOptions {
   now?: () => number;
@@ -104,7 +115,7 @@ export class AttemptRuntime {
   ) {
     this.now = options.now ?? Date.now;
     this.epoch = options.epoch ?? randomUUID();
-    if (options.recover !== false) this.recover();
+    if (options.recover !== false) this.pauseInterrupted();
   }
 
   private assertOpen() {
@@ -119,7 +130,10 @@ export class AttemptRuntime {
       throw new ApiError(404, "RUNTIME_NOT_STARTED", "请先准备分步演练");
     return row;
   }
-  private validateCommand(planId: string, command: RuntimeCommand) {
+  private validateCommand(
+    planId: string,
+    command: { expectedVersion: number; expectedAttemptId: string | null },
+  ) {
     const plan = this.store.plan(planId);
     if (plan.version !== command.expectedVersion)
       throw new ApiError(
@@ -131,16 +145,37 @@ export class AttemptRuntime {
       throw new ApiError(409, "ATTEMPT_CONFLICT", "观察尝试已改变，请重新读取");
     return plan;
   }
+  private sessionAttempts(planId: string, sessionDate: string) {
+    return this.store.db
+      .prepare(
+        `SELECT a.id,a.plan_version,a.consumed FROM attempts a
+       JOIN plan_versions v ON v.plan_id=a.plan_id AND v.version=a.plan_version
+       WHERE a.plan_id=? AND json_extract(v.json,'$.sessionDate')=?
+       ORDER BY a.rowid DESC`,
+      )
+      .all(planId, sessionDate) as {
+      id: string;
+      plan_version: number;
+      consumed: number;
+    }[];
+  }
   status(planId: string): RuntimeProgress | null {
     const plan = this.store.plan(planId);
-    if (!plan.attemptId) return null;
+    // A version edit clears the live attempt pointer, but keeps its recovery source visible.
+    const attemptId =
+      plan.attemptId ?? this.sessionAttempts(plan.id, plan.sessionDate)[0]?.id;
+    if (!attemptId) return null;
     const row = this.store.db
       .prepare("SELECT * FROM runtime_attempts WHERE attempt_id=?")
-      .get(plan.attemptId) as RuntimeRow | undefined;
+      .get(attemptId) as RuntimeRow | undefined;
     return row ? this.progress(row) : null;
   }
   private progress(row: RuntimeRow): RuntimeProgress {
     const state = frozen<AttemptState>(row.state_json);
+    const config = frozen<AttemptConfig>(row.config_json);
+    const source = frozen<{ recovery?: { fromAttemptId: string } }>(
+      row.source_json,
+    );
     const fixture = frozen<RuntimeInput[]>(row.fixture_json);
     const receipt = this.store.db
       .prepare(
@@ -151,6 +186,9 @@ export class AttemptRuntime {
     const next = fixture[row.step];
     return {
       synthetic: true,
+      template: config.template,
+      activatedAt: config.activatedAt,
+      recoveredFromAttemptId: source.recovery?.fromAttemptId ?? null,
       attemptId: row.attempt_id,
       planId: row.plan_id,
       planVersion: row.plan_version,
@@ -212,6 +250,21 @@ export class AttemptRuntime {
           "ATTEMPT_CONSUMED",
           "该尝试已由快速回放消费，请建立新尝试",
         );
+      const prior = this.sessionAttempts(plan.id, plan.sessionDate).find(
+        (attempt) => attempt.id !== plan.attemptId,
+      );
+      if (prior) {
+        const hasWatermark = this.store.db
+          .prepare("SELECT 1 FROM runtime_attempts WHERE attempt_id=?")
+          .get(prior.id);
+        throw new ApiError(
+          409,
+          hasWatermark ? "RECOVERY_REQUIRED" : "RECOVERY_WATERMARK_MISSING",
+          hasWatermark
+            ? "本交易日已有观察尝试，请从已保存水位显式恢复"
+            : "本交易日旧尝试没有可验证水位，不能从开盘重新演练",
+        );
+      }
       const now = this.now();
       const reasons = this.store.supportRevisionReasons(plan, now);
       if (reasons.length || !plan.supportSnapshot?.ready)
@@ -350,6 +403,201 @@ export class AttemptRuntime {
     });
   }
 
+  /** Explicit recovery starts a new identity; no old reduction or input is replayed. */
+  recover(planId: string, command: RuntimeRecoveryCommand): RuntimeProgress {
+    this.assertOpen();
+    if (!Number.isSafeInteger(command.expectedStep) || command.expectedStep < 0)
+      throw new ApiError(422, "INVALID_RUNTIME_STEP", "恢复水位必须为非负整数");
+    return this.store.transaction(() => {
+      const current = this.validateCommand(planId, command);
+      if (
+        !current.instrumentId.startsWith("DEMO-") ||
+        current.mode !== "CLOSE_CONFIRM"
+      )
+        throw new ApiError(
+          422,
+          "SYNTHETIC_ONLY",
+          "恢复入口只接受合成收盘确认演练",
+        );
+      const latest = this.sessionAttempts(planId, current.sessionDate)[0];
+      if (!latest || latest.id !== command.sourceAttemptId)
+        throw new ApiError(
+          409,
+          "RECOVERY_SOURCE_CONFLICT",
+          "恢复来源已改变，请重新读取",
+        );
+      const source = this.store.db
+        .prepare("SELECT * FROM runtime_attempts WHERE attempt_id=?")
+        .get(command.sourceAttemptId) as RuntimeRow | undefined;
+      if (!source)
+        throw new ApiError(
+          409,
+          "RECOVERY_WATERMARK_MISSING",
+          "旧尝试没有可验证水位，不能从开盘重新演练",
+        );
+      if (source.step !== command.expectedStep)
+        throw new ApiError(
+          409,
+          "RUNTIME_STEP_CONFLICT",
+          "演练进度已改变，请重新读取",
+        );
+      const previous = frozen<AttemptState>(source.state_json);
+      if (
+        latest.consumed ||
+        previous.consumed ||
+        current.status === "TRIGGERED" ||
+        this.store
+          .reservations()
+          .some(
+            (reservation) =>
+              reservation.planId === planId &&
+              reservation.state === "TAKEN_PENDING",
+          )
+      )
+        throw new ApiError(
+          409,
+          "ATTEMPT_CONSUMED",
+          "旧尝试已消费或交易尚待核对，不能通过恢复重复入场",
+        );
+      if (
+        !["USER_PAUSED", "DATA_PAUSED"].includes(current.status) &&
+        !(
+          current.status === "DRAFT" &&
+          current.attemptId === null &&
+          current.version > source.plan_version
+        )
+      )
+        throw new ApiError(
+          409,
+          "RECOVERY_NOT_PAUSED",
+          "请先暂停当前观察，再显式恢复",
+        );
+      const oldConfig = frozen<AttemptConfig>(source.config_json);
+      if (
+        oldConfig.sessionId !==
+        `synthetic:${current.instrumentId}:${current.sessionDate}`
+      )
+        throw new ApiError(
+          409,
+          "RECOVERY_SESSION_MISMATCH",
+          "恢复来源与当前证券或交易日不符",
+        );
+      const watermark = source.simulation_time;
+      if (!Number.isSafeInteger(watermark) || watermark < oldConfig.activatedAt)
+        throw new ApiError(
+          409,
+          "RECOVERY_WATERMARK_MISSING",
+          "旧尝试水位无效，不能恢复",
+        );
+      if (
+        watermark >=
+        Math.min(
+          oldConfig.sessionOpenAt + 60 * 60_000,
+          oldConfig.sessionCloseAt ?? Infinity,
+        )
+      )
+        throw new ApiError(
+          409,
+          "RECOVERY_OUTSIDE_FIRST_HOUR",
+          "已超过首小时，不能重新建立恢复观察",
+        );
+      const fixture = frozen<RuntimeInput[]>(source.fixture_json).filter(
+        (input) => this.afterWatermark(input, watermark),
+      );
+      if (!fixture.some((input) => input.type === "BAR"))
+        throw new ApiError(
+          409,
+          "RECOVERY_INPUTS_EXHAUSTED",
+          "水位之后没有完整的新合成行情，不能恢复",
+        );
+      if (!current.backgroundConfirmed || !current.reason.trim())
+        throw new ApiError(
+          422,
+          "BACKGROUND_UNCONFIRMED",
+          "请确认日线背景并填写关注理由",
+        );
+      if (!this.store.screeningSettings().current)
+        throw new ApiError(
+          422,
+          "RULES_UNCONFIRMED",
+          "请先在设置中确认 C 类工程筛选预设",
+        );
+      const daily = this.store.bars(current.instrumentId, "1D");
+      if (!calculateIndicators(daily).screeningReady || !daily.at(-1))
+        throw new ApiError(
+          422,
+          "DAILY_HISTORY_INCOMPLETE",
+          "日线预热或完整性不足",
+        );
+      const now = this.now();
+      const { plan } = this.store.activate(
+        planId,
+        command.expectedVersion,
+        now,
+        {
+          recovery: true,
+          expectedAttemptId: command.expectedAttemptId,
+          sourceAttemptId: command.sourceAttemptId,
+        },
+      );
+      const version = this.store.planVersion(plan);
+      const config: AttemptConfig = {
+        ...oldConfig,
+        attemptId: plan.attemptId!,
+        planVersion: plan.version,
+        activatedAt: watermark,
+        lower: plan.lower,
+        upper: plan.upper,
+        stop: plan.stop,
+        entryMin: plan.entryMin,
+        entryMax: plan.entryMax,
+        tick: version.instrument.tick,
+        previousDayClose:
+          version.previousDailyBar?.close ?? oldConfig.previousDayClose,
+        evidenceEpoch: `synthetic:${randomUUID()}`,
+        template: "RECOVERY",
+        preActivationEvidence: "UNKNOWN",
+      };
+      this.store.db
+        .prepare(
+          "INSERT INTO runtime_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        )
+        .run(
+          plan.attemptId,
+          plan.id,
+          plan.version,
+          this.epoch,
+          "READY",
+          0,
+          watermark,
+          null,
+          encode(config),
+          encode(fixture),
+          encode({
+            ...frozen<Record<string, unknown>>(source.source_json),
+            recovery: {
+              fromAttemptId: source.attempt_id,
+              watermark,
+              planVersion: version,
+              sourceBarsRole: "ORIGINAL_SYNTHETIC_FIXTURE",
+            },
+          }),
+          encode(createAttempt(config)),
+          "[]",
+          now,
+        );
+      return this.progress(this.row(plan.attemptId!));
+    });
+  }
+
+  private afterWatermark(input: RuntimeInput, watermark: number): boolean {
+    if (input.receivedAt <= watermark) return false;
+    if (input.type === "BAR") return input.bar.start > watermark;
+    if (input.type === "REFERENCE")
+      return input.bar.start > watermark && input.candidate.start > watermark;
+    return false;
+  }
+
   private snapshot(
     row: RuntimeRow,
     state: AttemptState,
@@ -429,6 +677,16 @@ export class AttemptRuntime {
   private accept(row: RuntimeRow, raw: RuntimeInput): void {
     const config = frozen<AttemptConfig>(row.config_json);
     const previous = frozen<AttemptState>(row.state_json);
+    if (
+      config.template === "RECOVERY" &&
+      (raw.type === "BAR" || raw.type === "REFERENCE") &&
+      !this.afterWatermark(raw, config.activatedAt)
+    )
+      throw new ApiError(
+        409,
+        "RECOVERY_INPUT_BEFORE_WATERMARK",
+        "恢复只能接受旧水位之后完整的新行情",
+      );
     const plan = this.store.plan(row.plan_id);
     if (plan.attemptId !== row.attempt_id || plan.version !== row.plan_version)
       throw new ApiError(409, "ATTEMPT_CONFLICT", "冻结尝试已被新版本替代");
@@ -496,9 +754,13 @@ export class AttemptRuntime {
         },
         lod: {
           price: low,
-          from: config.sessionOpenAt,
+          from:
+            config.template === "RECOVERY"
+              ? config.activatedAt
+              : config.sessionOpenAt,
           through: input.bar.end,
-          complete: true,
+          // Recovery has only the new attempt's observations, not a verified whole-session low.
+          complete: config.template !== "RECOVERY",
         },
       };
     }
@@ -712,7 +974,7 @@ export class AttemptRuntime {
     }, intervalMs);
     this.timer.unref();
   }
-  private recover(): void {
+  private pauseInterrupted(): void {
     this.store.transaction(() => {
       const rows = this.store.db
         .prepare(

@@ -47,7 +47,13 @@ import {
 type Page = "candidates" | "research" | "events";
 type Period = "1D" | "1m" | "5m";
 type ConflictTarget =
-  | { kind: "plan"; planId: string; context: string; version: number }
+  | {
+      kind: "plan";
+      planId: string;
+      context: string;
+      version: number;
+      attemptId: string | null;
+    }
   | { kind: "funds"; generation: number };
 type ConflictReview = {
   requestId: string;
@@ -116,9 +122,10 @@ const blankPlan = (instrumentId = ""): PlanInput => ({
 });
 const planState: Record<string, string> = {
   DRAFT: "草稿",
-  WAIT_RETEST: "等待首次回踩",
+  WAIT_RETEST: "等待回踩",
   ARMED: "已确认回踩",
   PAUSED: "已暂停",
+  USER_PAUSED: "已暂停",
   DATA_PAUSED: "数据暂停",
   INVALID: "计划失效",
   EXPIRED: "本次已到期",
@@ -405,6 +412,18 @@ export default function App() {
   const [plan, setPlan] = useState<PlanInput>(blankPlan());
   const [savedPlan, setSavedPlan] = useState<Plan | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [runtimeSource, setRuntimeSource] = useState<{
+    key: string;
+    exists: boolean;
+  } | null>(null);
+  const runtimeKey = savedPlan
+    ? `${savedPlan.id}:${savedPlan.version}:${savedPlan.attemptId ?? "none"}`
+    : "";
+  const isSyntheticPlan = Boolean(
+    boot.demo && savedPlan?.instrumentId.startsWith("DEMO-"),
+  );
+  const runtimeSourceKnown = runtimeSource?.key === runtimeKey;
+  const hasRuntimeSource = runtimeSourceKnown && runtimeSource.exists;
   const [period, setPeriod] = useState<Period>("1D");
   const [chart, setChart] = useState<ChartData>(EMPTY_CHART);
   const [chartLoading, setChartLoading] = useState(false);
@@ -464,6 +483,9 @@ export default function App() {
   const priceProposalContext = useRef("");
   const refreshSeq = useRef(0);
   async function refresh(updateSelected = false) {
+    const editing = planEditSeq.current;
+    const mayUpdateSelected =
+      updateSelected && !dirty && conflictReview?.target.kind !== "plan";
     const context = priceProposalContext.current;
     const requested = ++refreshSeq.current;
     setCandidateLoading(true);
@@ -502,13 +524,24 @@ export default function App() {
       setCoverage(c.coverage);
       eventFeed.acceptPage(b.eventPage);
       if (
-        updateSelected &&
+        mayUpdateSelected &&
+        editing === planEditSeq.current &&
         context === priceProposalContext.current &&
         savedPlan
-      )
-        setSavedPlan(
-          b.plans.find((row) => row.id === savedPlan.id) ?? savedPlan,
-        );
+      ) {
+        const latest =
+          b.plans.find((row) => row.id === savedPlan.id) ?? savedPlan;
+        // A clean explicit refresh adopts visible fields and their CAS baseline
+        // together. Editing drafts retain both until conflict review is accepted.
+        planEditSeq.current++;
+        setSavedPlan(latest);
+        setPlan({ ...latest });
+        if (
+          latest.version !== savedPlan.version ||
+          latest.attemptId !== savedPlan.attemptId
+        )
+          setRisk(null);
+      }
     } catch (error) {
       if (requested !== refreshSeq.current) return;
       setCandidateError(
@@ -585,7 +618,7 @@ export default function App() {
       setDirty(true);
       setRisk(null);
       setNotice({
-        text: `已保留输入，基于服务端版本 ${conflictReview.latestPlan.version} 继续编辑。请核对后保存新版本。`,
+        text: `已保留输入，基于服务端版本 ${conflictReview.latestPlan.version} 与最新观察尝试继续编辑。请核对后保存新版本。`,
         error: false,
       });
     } else {
@@ -877,7 +910,13 @@ export default function App() {
         const result = await api<Plan>(
           savedPlan ? `/plans/${savedPlan.id}/versions` : "/plans",
           "POST",
-          savedPlan ? { ...plan, expectedVersion: savedPlan.version } : plan,
+          savedPlan
+            ? {
+                ...plan,
+                expectedVersion: savedPlan.version,
+                expectedAttemptId: savedPlan.attemptId ?? null,
+              }
+            : plan,
         );
         if (context === researchContext.current) {
           setSavedPlan(result);
@@ -895,6 +934,7 @@ export default function App() {
             planId: savedPlan.id,
             context,
             version: savedPlan.version,
+            attemptId: savedPlan.attemptId ?? null,
           }
         : undefined,
     );
@@ -2451,7 +2491,11 @@ export default function App() {
                           ) ? (
                             <button
                               className="button secondary full"
-                              disabled={busy || dirty}
+                              disabled={
+                                busy ||
+                                dirty ||
+                                conflictReview?.target.kind === "plan"
+                              }
                               onClick={() =>
                                 void action(
                                   async () => {
@@ -2459,7 +2503,11 @@ export default function App() {
                                     const result = await api<Plan>(
                                       `/plans/${savedPlan.id}/pause`,
                                       "POST",
-                                      { expectedVersion: savedPlan.version },
+                                      {
+                                        expectedVersion: savedPlan.version,
+                                        expectedAttemptId:
+                                          savedPlan.attemptId ?? null,
+                                      },
                                     );
                                     if (context === researchContext.current)
                                       setSavedPlan(result);
@@ -2471,6 +2519,7 @@ export default function App() {
                                     planId: savedPlan.id,
                                     context: researchContext.current,
                                     version: savedPlan.version,
+                                    attemptId: savedPlan.attemptId ?? null,
                                   },
                                 )
                               }
@@ -2478,6 +2527,25 @@ export default function App() {
                               <Icon name="pause" size={16} />
                               暂停观察
                             </button>
+                          ) : savedPlan &&
+                            (["TAKEN", "SKIPPED", "TRIGGERED"].includes(
+                              savedPlan.status,
+                            ) ||
+                              (isSyntheticPlan &&
+                                (savedPlan.attemptId || hasRuntimeSource) &&
+                                [
+                                  "DRAFT",
+                                  "PAUSED",
+                                  "USER_PAUSED",
+                                  "DATA_PAUSED",
+                                ].includes(savedPlan.status))) ? (
+                            <small className="disabled-reason">
+                              {["TAKEN", "SKIPPED", "TRIGGERED"].includes(
+                                savedPlan.status,
+                              )
+                                ? "本次观察已有判断结果，保留当前尝试与历史记录。"
+                                : "本次观察已暂停。请在下方核对已保存进度，并显式新建恢复尝试。"}
+                            </small>
                           ) : (
                             <button
                               className="button primary full"
@@ -2485,10 +2553,12 @@ export default function App() {
                                 busy ||
                                 !savedPlan ||
                                 dirty ||
+                                conflictReview?.target.kind === "plan" ||
                                 !plan.backgroundConfirmed ||
                                 !savedPlan?.supportSnapshot?.ready ||
                                 !supportPreview?.ready ||
-                                !!monitorUnavailable
+                                !!monitorUnavailable ||
+                                (isSyntheticPlan && !runtimeSourceKnown)
                               }
                               onClick={() =>
                                 void action(
@@ -2501,7 +2571,11 @@ export default function App() {
                                     }>(
                                       `/plans/${savedPlan!.id}/activate`,
                                       "POST",
-                                      { expectedVersion: savedPlan!.version },
+                                      {
+                                        expectedVersion: savedPlan!.version,
+                                        expectedAttemptId:
+                                          savedPlan!.attemptId ?? null,
+                                      },
                                     );
                                     if (context === researchContext.current) {
                                       setSavedPlan(result.plan);
@@ -2518,6 +2592,7 @@ export default function App() {
                                     planId: savedPlan!.id,
                                     context: researchContext.current,
                                     version: savedPlan!.version,
+                                    attemptId: savedPlan!.attemptId ?? null,
                                   },
                                 )
                               }
@@ -2548,25 +2623,51 @@ export default function App() {
                           savedPlan &&
                           savedPlan.instrumentId.startsWith("DEMO-") && (
                             <SyntheticRuntime
-                              key={`${savedPlan.id}:${savedPlan.version}:${savedPlan.attemptId ?? "none"}`}
+                              key={runtimeKey}
                               plan={savedPlan}
-                              disabled={busy || dirty}
+                              disabled={
+                                busy ||
+                                dirty ||
+                                conflictReview?.target.kind === "plan"
+                              }
                               onBusyChange={setBusy}
+                              onRuntimeRead={(exists) =>
+                                setRuntimeSource({ key: runtimeKey, exists })
+                              }
                               onChanged={() => refresh(true)}
                             />
                           )}
                         {boot.demo && savedPlan && (
                           <button
                             className="text-button replay-button"
-                            disabled={busy || dirty}
+                            disabled={
+                              busy ||
+                              dirty ||
+                              conflictReview?.target.kind === "plan"
+                            }
                             onClick={() =>
-                              void action(async () => {
-                                await api(
-                                  `/demo/plans/${savedPlan.id}/replay`,
-                                  "POST",
-                                );
-                                await refresh();
-                              }, "合成回放已完成，请在「提醒与记录」查看结果。")
+                              void action(
+                                async () => {
+                                  await api(
+                                    `/demo/plans/${savedPlan.id}/replay`,
+                                    "POST",
+                                    {
+                                      expectedVersion: savedPlan.version,
+                                      expectedAttemptId:
+                                        savedPlan.attemptId ?? null,
+                                    },
+                                  );
+                                  await refresh(true);
+                                },
+                                "合成回放已完成，请在「提醒与记录」查看结果。",
+                                {
+                                  kind: "plan",
+                                  planId: savedPlan.id,
+                                  context: researchContext.current,
+                                  version: savedPlan.version,
+                                  attemptId: savedPlan.attemptId ?? null,
+                                },
+                              )
                             }
                           >
                             运行此计划的合成回放 →
@@ -3500,7 +3601,7 @@ function ConflictPanel({
       }}
     >
       <h3 style={{ fontSize: 12, marginBottom: 8 }}>
-        版本发生变化 · 先核对，再继续
+        版本或观察尝试发生变化 · 先核对，再继续
       </h3>
       <p>
         你的输入完整保留。读取最新内容不会覆盖输入，也不会自动更新提交基线。
@@ -3520,6 +3621,13 @@ function ConflictPanel({
               ? `当前基线 v${target.version}；服务端最新 ${review.latestPlan ? `v${review.latestPlan.version} · ${planState[review.latestPlan.status] || review.latestPlan.status}` : "计划不存在"}`
               : `当前资金基线 ${target.generation}；服务端最新 ${review.latestFunds?.generation ?? 0} · ${review.latestFunds?.stale ? "待刷新" : "已确认"}`}
           </p>
+          {target.kind === "plan" && (
+            <p className="attempt-identity">
+              当前尝试基线：{target.attemptId ?? "尚未建立"}
+              <br />
+              服务端最新尝试：{review.latestPlan?.attemptId ?? "尚未建立"}
+            </p>
+          )}
           {target.kind === "funds" && (
             <p style={{ color: "#986b36" }}>
               最新确认时间：{when(review.latestFunds?.confirmedAt)}
@@ -3603,6 +3711,13 @@ function ConflictPanel({
           >
             保留输入并基于最新版本继续编辑
           </button>
+          {target.kind === "plan" && (
+            <p className="attempt-identity">
+              当前尝试基线：{target.attemptId ?? "尚未建立"}
+              <br />
+              服务端最新尝试：{review.latestPlan?.attemptId ?? "尚未建立"}
+            </p>
+          )}
           {target.kind === "funds" && (
             <p>
               选择后会取消资金确认勾选。你需要重新核对账户并明确确认，之后才能保存。

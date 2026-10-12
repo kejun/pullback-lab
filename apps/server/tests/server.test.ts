@@ -104,14 +104,18 @@ async function activated(
   expect(created.statusCode).toBe(200);
   const plan = created.json<Plan>();
   const response = await fixture.post(`/api/plans/${plan.id}/activate`, {
-    expectedVersion: 1,
+    expectedVersion: plan.version,
+    expectedAttemptId: plan.attemptId ?? null,
   });
   expect(response.json()).not.toHaveProperty("error");
   expect(response.statusCode).toBe(200);
   return response.json<{ plan: Plan }>().plan;
 }
 async function replay(fixture: Awaited<ReturnType<typeof setup>>, plan: Plan) {
-  const result = await fixture.post(`/api/demo/plans/${plan.id}/replay`);
+  const result = await fixture.post(`/api/demo/plans/${plan.id}/replay`, {
+    expectedVersion: plan.version,
+    expectedAttemptId: plan.attemptId ?? null,
+  });
   expect(result.statusCode).toBe(200);
   return result.json<{
     events: {
@@ -189,7 +193,10 @@ describe("private API and durable workflow", () => {
     ).json();
     expect(
       (
-        await post(`/api/plans/${plan.id}/activate`, { expectedVersion: 1 })
+        await post(`/api/plans/${plan.id}/activate`, {
+          expectedVersion: plan.version,
+          expectedAttemptId: plan.attemptId ?? null,
+        })
       ).json().code,
     ).toBe("LIVE_CAPABILITY_UNVERIFIED");
   });
@@ -313,7 +320,8 @@ describe("private API and durable workflow", () => {
         await f.post(`/api/plans/${created.id}/versions`, {
           ...input,
           reason: "new version",
-          expectedVersion: 1,
+          expectedVersion: created.version,
+          expectedAttemptId: created.attemptId ?? null,
         })
       ).json().version,
     ).toBe(2);
@@ -322,7 +330,8 @@ describe("private API and durable workflow", () => {
         await f.post(`/api/plans/${created.id}/versions`, {
           ...input,
           reason: "stale version",
-          expectedVersion: 1,
+          expectedVersion: created.version,
+          expectedAttemptId: created.attemptId ?? null,
         })
       ).statusCode,
     ).toBe(409);
@@ -428,14 +437,19 @@ describe("private API and durable workflow", () => {
       generation: 2,
     });
     expect(
-      (await f.post(`/api/plans/${p.id}/pause`, { expectedVersion: 1 }))
-        .statusCode,
+      (
+        await f.post(`/api/plans/${p.id}/pause`, {
+          expectedVersion: p.version,
+          expectedAttemptId: p.attemptId ?? null,
+        })
+      ).statusCode,
     ).toBe(409);
     expect(
       (
         await f.post(`/api/plans/${p.id}/versions`, {
           ...input,
-          expectedVersion: 1,
+          expectedVersion: p.version,
+          expectedAttemptId: p.attemptId ?? null,
         })
       ).statusCode,
     ).toBe(409);
@@ -517,9 +531,9 @@ describe("private API and durable workflow", () => {
       })
     ).json();
     expect(read.runtime.step).toBe(next.json().runtime.step);
-    expect((await f.post(`/api/demo/plans/${p.id}/replay`)).json().code).toBe(
-      "RUNTIME_ALREADY_STARTED",
-    );
+    expect(
+      (await f.post(`/api/demo/plans/${p.id}/replay`, command)).json().code,
+    ).toBe("RUNTIME_ALREADY_STARTED");
     const live = await setup(false);
     expect(
       (await live.post(`/api/demo/plans/${p.id}/runtime/start`, command))
@@ -686,9 +700,14 @@ describe("SQLite transaction boundary", () => {
     f.app.store.db.exec(
       "CREATE TRIGGER fail_notification BEFORE INSERT ON notifications BEGIN SELECT RAISE(ABORT,'simulated disk failure'); END;",
     );
-    expect((await f.post(`/api/demo/plans/${p.id}/replay`)).statusCode).toBe(
-      500,
-    );
+    expect(
+      (
+        await f.post(`/api/demo/plans/${p.id}/replay`, {
+          expectedVersion: p.version,
+          expectedAttemptId: p.attemptId ?? null,
+        })
+      ).statusCode,
+    ).toBe(500);
     expect(f.app.store.events()).toHaveLength(0);
     expect(f.app.store.plan(p.id).status).toBe("WAIT_RETEST");
     expect(

@@ -61,7 +61,10 @@ const numeric = z
   .regex(/^(?:0|[1-9]\d*)(?:\.\d+)?$/, "价格和金额必须是非负十进制字符串");
 const positive = numeric.refine((s) => new Decimal(s).gt(0), "数值必须大于零");
 const integer = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-const version = z.object({ expectedVersion: integer.positive() });
+const version = z.object({
+  expectedVersion: integer.positive(),
+  expectedAttemptId: z.string().min(1).max(120).nullable(),
+});
 const supportSelectionsSchema = z
   .array(
     z.union([
@@ -309,9 +312,43 @@ export async function createApp(
   app.get("/api/candidates", async () =>
     screening.candidates(now(), options.marketStatus?.()),
   );
+  function checkedPlan(id: string, body: unknown): Plan {
+    const expected = version.parse(body);
+    const plan = store.plan(id);
+    if (plan.version !== expected.expectedVersion)
+      throw new ApiError(
+        409,
+        "VERSION_CONFLICT",
+        "计划已有新版本，请重新读取；输入已保留",
+      );
+    if (plan.attemptId !== expected.expectedAttemptId)
+      throw new ApiError(
+        409,
+        "ATTEMPT_CONFLICT",
+        "观察尝试已经变化，请重新读取；输入已保留",
+      );
+    return plan;
+  }
+  function assertInitialActivation(plan: Plan): void {
+    const previous = store.db
+      .prepare(
+        `SELECT a.id FROM attempts a
+      JOIN plan_versions v ON v.plan_id=a.plan_id AND v.version=a.plan_version
+      WHERE a.plan_id=? AND json_extract(v.json,'$.sessionDate')=?
+      LIMIT 1`,
+      )
+      .get(plan.id, plan.sessionDate);
+    if (previous && !(plan.attemptId && plan.status === "WAIT_RETEST"))
+      throw new ApiError(
+        409,
+        "RECOVERY_REQUIRED",
+        "本会话已有观察尝试，请从已保存进度显式新建恢复尝试",
+      );
+  }
   function command<T>(request: FastifyRequest, execute: () => T): T {
     const key = request.headers["idempotency-key"];
-    if (!key) return execute();
+    // The attempt check and its write share the same lock even without a retry key.
+    if (!key) return store.transaction(execute);
     if (typeof key !== "string" || key.length > 120 || key.length < 8)
       throw new ApiError(
         400,
@@ -521,14 +558,15 @@ export async function createApp(
   app.post<{ Params: { id: string } }>(
     "/api/plans/:id/versions",
     async (request) =>
-      command(request, () =>
-        store.updatePlan(
+      command(request, () => {
+        const current = checkedPlan(request.params.id, request.body);
+        return store.updatePlan(
           request.params.id,
           validatePlan(request.body),
-          version.parse(request.body).expectedVersion,
+          current.version,
           now(),
-        ),
-      ),
+        );
+      }),
   );
   app.post<{ Params: { id: string } }>("/api/plans/:id/risk", async (request) =>
     store.risk(store.plan(request.params.id), now()),
@@ -536,24 +574,31 @@ export async function createApp(
   app.post<{ Params: { id: string } }>(
     "/api/plans/:id/activate",
     async (request) => {
-      const current = store.plan(request.params.id);
-      const revisionReasons = store.supportRevisionReasons(current, now());
-      if (revisionReasons.some((reason) => reason.endsWith("REVISION_CHANGED")))
-        store.invalidateEvidence(
-          current.instrumentId,
-          revisionReasons[0],
-          now(),
-          true,
-        );
+      const key = request.headers["idempotency-key"];
+      const knownCommand =
+        typeof key === "string" &&
+        store.db.prepare("SELECT 1 FROM command_results WHERE key=?").get(key);
+      if (!knownCommand)
+        store.transaction(() => {
+          // Reject stale control snapshots before any evidence-driven pause. Successful
+          // retries are read from command_results below even after the attempt changes.
+          const current = checkedPlan(request.params.id, request.body);
+          const revisionReasons = store.supportRevisionReasons(current, now());
+          if (
+            revisionReasons.some((reason) =>
+              reason.endsWith("REVISION_CHANGED"),
+            )
+          )
+            store.invalidateEvidence(
+              current.instrumentId,
+              revisionReasons[0],
+              now(),
+              true,
+            );
+        });
       return command(request, () => {
-        const p = store.plan(request.params.id);
-        const expected = version.parse(request.body).expectedVersion;
-        if (p.version !== expected)
-          throw new ApiError(
-            409,
-            "VERSION_CONFLICT",
-            "计划已经变化，请重新读取",
-          );
+        const p = checkedPlan(request.params.id, request.body);
+        const expected = p.version;
         if (!demo || !p.instrumentId.startsWith("DEMO-"))
           throw new ApiError(
             422,
@@ -613,6 +658,14 @@ export async function createApp(
             "SYNTHETIC_SESSION_REQUIRED",
             "固定合成回放的会话日期为 2026-10-09",
           );
+        const evidenceReasons = store.supportRevisionReasons(p, now());
+        if (evidenceReasons.length)
+          throw new ApiError(
+            422,
+            evidenceReasons[0],
+            "支撑依据缺失或已修订，请显式保存新的计划版本",
+          );
+        assertInitialActivation(p);
         return store.activate(p.id, expected, now());
       });
     },
@@ -620,13 +673,10 @@ export async function createApp(
   app.post<{ Params: { id: string } }>(
     "/api/plans/:id/pause",
     async (request) =>
-      command(request, () =>
-        store.pause(
-          request.params.id,
-          version.parse(request.body).expectedVersion,
-          now(),
-        ),
-      ),
+      command(request, () => {
+        const current = checkedPlan(request.params.id, request.body);
+        return store.pause(current.id, current.version, now());
+      }),
   );
   app.post("/api/funds", async (request) =>
     command(request, () => {
@@ -765,6 +815,22 @@ export async function createApp(
     },
   );
   app.post<{ Params: { id: string } }>(
+    "/api/demo/plans/:id/runtime/recover",
+    async (request) => {
+      runtimeGuard();
+      const input = version
+        .extend({
+          sourceAttemptId: z.string().min(1).max(120),
+          expectedStep: integer,
+        })
+        .strict()
+        .parse(request.body);
+      return command(request, () => ({
+        runtime: runtime.recover(request.params.id, input),
+      }));
+    },
+  );
+  app.post<{ Params: { id: string } }>(
     "/api/demo/plans/:id/runtime/step",
     async (request) => {
       runtimeGuard();
@@ -785,6 +851,7 @@ export async function createApp(
       command(request, () => {
         if (!demo)
           throw new ApiError(404, "DEMO_DISABLED", "未启用合成演示模式");
+        checkedPlan(request.params.id, request.body);
         if (runtime.status(request.params.id))
           throw new ApiError(
             409,

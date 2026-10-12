@@ -8,6 +8,7 @@ const scenarios = [
   "runtime-feed",
   "candidates",
   "operations",
+  "recovery",
 ] as const;
 
 export default defineConfig({

@@ -491,8 +491,14 @@ it("serves authenticated read-only audit of an actual committed decision, withou
         { source: "HORIZONTAL", id: "main", price: "100", label: "人工水平线" },
       ],
     });
-    await post(`/api/plans/${plan.id}/activate`, { expectedVersion: 1 });
-    const { events } = await post(`/api/demo/plans/${plan.id}/replay`);
+    const { plan: activePlan } = await post(`/api/plans/${plan.id}/activate`, {
+      expectedVersion: plan.version,
+      expectedAttemptId: plan.attemptId ?? null,
+    });
+    const { events } = await post(`/api/demo/plans/${plan.id}/replay`, {
+      expectedVersion: activePlan.version,
+      expectedAttemptId: activePlan.attemptId,
+    });
     const final = events.find(
       (event: { type: string }) => event.type === "HISTORICAL_TRIGGERED",
     );

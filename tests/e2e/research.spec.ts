@@ -85,6 +85,7 @@ test("research workflow preserves plans, records and stale-funds protection", as
       data: {
         ...existing,
         expectedVersion: existing.version,
+        expectedAttemptId: existing.attemptId ?? null,
         reason: "另一个标签页的研究依据",
       },
     },
