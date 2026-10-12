@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import type { QuoteContext } from "longbridge";
 vi.mock("longbridge", () => ({
   AdjustType: { NoAdjust: 0 },
@@ -90,16 +90,14 @@ describe("SDK adapter read-only boundary", () => {
   });
   it("does not infer same-day selling or price tick rules from provider lot size", async () => {
     const adapter = new LongbridgeReadOnlyAdapter({
-      staticInfo: vi
-        .fn()
-        .mockResolvedValue([
-          {
-            symbol: "600519.SH",
-            exchange: "SSE",
-            currency: "CNY",
-            lotSize: 100,
-          },
-        ]),
+      staticInfo: vi.fn().mockResolvedValue([
+        {
+          symbol: "600519.SH",
+          exchange: "SSE",
+          currency: "CNY",
+          lotSize: 100,
+        },
+      ]),
     } as unknown as QuoteContext);
     expect(await adapter.instrumentEvidence(["600519.SH"])).toEqual([
       {
@@ -110,5 +108,143 @@ describe("SDK adapter read-only boundary", () => {
         rulesVerified: false,
       },
     ]);
+  });
+});
+
+afterEach(() => vi.useRealTimers());
+function streamFixture() {
+  let callback: Parameters<QuoteContext["setOnCandlestick"]>[0] = () => {};
+  const subscribeCandlesticks = vi.fn(async () => []);
+  const unsubscribeCandlesticks = vi.fn(async () => {});
+  const ctx = {
+    setOnCandlestick: vi.fn((next: typeof callback) => {
+      callback = next;
+    }),
+    subscribeCandlesticks,
+    unsubscribeCandlesticks,
+  };
+  const adapter = new LongbridgeReadOnlyAdapter(ctx as unknown as QuoteContext);
+  const emit = (confirmed = true) =>
+    callback(null, {
+      symbol: "AAPL.US",
+      data: { period: 1, candlestick: candle(), isConfirmed: confirmed },
+    } as Parameters<typeof callback>[1]);
+  return { adapter, ctx, emit, callback: () => callback };
+}
+describe("confirmed subscription lifecycle", () => {
+  it("detaches callbacks, releases every subscription and freezes returned evidence", async () => {
+    vi.useFakeTimers();
+    const f = streamFixture();
+    const result = f.adapter.observeConfirmed(
+      ["AAPL.US", "600519.SH"],
+      1000,
+      20,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const oldCallback = f.callback();
+    f.emit(true);
+    f.emit(false);
+    await vi.advanceTimersByTimeAsync(1000);
+    const samples = await result;
+    expect(samples.map((s) => s.finality)).toEqual(["CONFIRMED", "UNKNOWN"]);
+    expect(f.ctx.unsubscribeCandlesticks.mock.calls).toEqual([
+      ["AAPL.US", 1],
+      ["600519.SH", 1],
+    ]);
+    oldCallback(null, {
+      symbol: "AAPL.US",
+      data: { period: 1, candlestick: candle(), isConfirmed: true },
+    } as Parameters<typeof oldCallback>[1]);
+    expect(samples).toHaveLength(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("cleans up both confirmed and ambiguously failed subscriptions", async () => {
+    const f = streamFixture();
+    f.ctx.subscribeCandlesticks.mockRejectedValueOnce(
+      new Error("provider failure"),
+    );
+    await expect(
+      f.adapter.observeConfirmed(["AAPL.US"], 1000, 20),
+    ).rejects.toThrow("provider failure");
+    expect(f.ctx.unsubscribeCandlesticks).toHaveBeenCalledWith("AAPL.US", 1);
+  });
+  it("tries all cleanup calls even if one fails and does not report successful evidence", async () => {
+    vi.useFakeTimers();
+    const f = streamFixture();
+    f.ctx.unsubscribeCandlesticks.mockRejectedValueOnce(
+      new Error("cleanup private error"),
+    );
+    const assertion = expect(
+      f.adapter.observeConfirmed(["AAPL.US", "600519.SH"], 1000, 20),
+    ).rejects.toThrow("CANDLESTICK_CLEANUP_FAILED");
+    await vi.advanceTimersByTimeAsync(1000);
+    await assertion;
+    expect(f.ctx.unsubscribeCandlesticks).toHaveBeenCalledTimes(2);
+    await expect(
+      f.adapter.observeConfirmed(["AAPL.US"], 1000, 20),
+    ).rejects.toThrow("OBSERVATION_ALREADY_RUNNING");
+  });
+  it("bounds subscribe timeout and compensates for a late acknowledgement", async () => {
+    vi.useFakeTimers();
+    const f = streamFixture();
+    let complete!: (value: never[]) => void;
+    f.ctx.subscribeCandlesticks.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const assertion = expect(
+      f.adapter.observeConfirmed(["AAPL.US", "600519.SH"], 1000, 20),
+    ).rejects.toThrow("OPERATION_TIMEOUT");
+    await vi.advanceTimersByTimeAsync(20);
+    await assertion;
+    expect(f.ctx.subscribeCandlesticks).toHaveBeenCalledTimes(1);
+    expect(f.ctx.unsubscribeCandlesticks).toHaveBeenCalledTimes(1);
+    complete([]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.ctx.unsubscribeCandlesticks).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("bounds hanging unsubscribe calls and ignores callback errors after cleanup", async () => {
+    vi.useFakeTimers();
+    const f = streamFixture();
+    f.ctx.unsubscribeCandlesticks.mockImplementation(
+      () => new Promise(() => {}),
+    );
+    const assertion = expect(
+      f.adapter.observeConfirmed(["AAPL.US", "600519.SH"], 1000, 20),
+    ).rejects.toThrow("CANDLESTICK_CLEANUP_FAILED");
+    await vi.advanceTimersByTimeAsync(1020);
+    await assertion;
+    expect(f.ctx.unsubscribeCandlesticks).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("does not allow a second observer to overwrite the active callback", async () => {
+    vi.useFakeTimers();
+    const f = streamFixture();
+    const first = f.adapter.observeConfirmed(["AAPL.US"], 1000, 20);
+    await expect(
+      f.adapter.observeConfirmed(["600519.SH"], 1000, 20),
+    ).rejects.toThrow("OBSERVATION_ALREADY_RUNNING");
+    await vi.advanceTimersByTimeAsync(1000);
+    await first;
+    expect(f.ctx.subscribeCandlesticks).toHaveBeenCalledTimes(1);
+  });
+  it("reports stream errors and rejects fractional or NaN observation bounds before subscribing", async () => {
+    vi.useFakeTimers();
+    const f = streamFixture();
+    for (const duration of [NaN, 1000.5, Infinity])
+      await expect(
+        f.adapter.observeConfirmed(["AAPL.US"], duration),
+      ).rejects.toThrow("OBSERVATION_BOUNDS_INVALID");
+    const assertion = expect(
+      f.adapter.observeConfirmed(["AAPL.US"], 1000, 20),
+    ).rejects.toThrow("CANDLESTICK_STREAM_ERROR");
+    await vi.advanceTimersByTimeAsync(0);
+    f.callback()(new Error("stream private error"), undefined as never);
+    await vi.advanceTimersByTimeAsync(1000);
+    await assertion;
+    expect(f.ctx.unsubscribeCandlesticks).toHaveBeenCalledTimes(1);
   });
 });
