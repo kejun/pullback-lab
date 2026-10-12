@@ -22,12 +22,20 @@
 
 ```sh
 node --import tsx scripts/probe.ts
-node --import tsx scripts/probe.ts --symbols AAPL.US,600519.SH --observe-seconds 65
+node --import tsx scripts/probe.ts --symbols AAPL.US,600519.SH --observe-seconds 65 --output probe-evidence.jsonl
 ```
 
 使用 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN`。`PULLBACK_DEPLOYMENT_REGION` 仅记录用户声明，不视为部署地区核验。CLI 要求明确列出至多两只已授权证券，不自动选股、不购买行情、不调用交易账户、持仓或订单接口。
 
 退出码：`2` 表示能力尚未验证或缺配置；`1` 表示探针执行失败。当前没有返回“已接通”的路径：即使读取成功，也只生成样本和未解决清单。无凭据时不会建立 SDK 行情上下文。
+
+报告 schema 为 `pullback-lab-market-probe-v2`。`steps` 逐项保存开始/结束时间、耗时、结果和受限样本；覆盖行情等级、套餐、每只证券的静态资料/报价/日线/1分钟/5分钟，以及各市场日历。`SAMPLED` 仅表示返回样本，`EMPTY` 表示没有证据，`FAILED` 与 `TIMED_OUT` 表示执行失败，`SKIPPED` 给出未执行原因。单步普通失败不会丢弃其他步骤的结果；超时后不再发送后续请求，因为 SDK 没有承诺原请求已取消。
+
+`--output` 可选，创建权限为 0600 的新 JSONL 文件，每个检查点追加一行完整报告并 fsync，最终标准输出仍是一份 JSON。已有路径一律拒绝；保存失败立即停止采样。读取最后一条完整 JSON 行即可取得最新检查点，进程意外中断可能留下不完整的最后一行。报告包含所选证券及行情样本，按实际留存许可私有保存，不能作为不含研究内容的运行诊断报告公开分享。
+
+请求默认间隔至少一秒，单步等待默认最多20秒。可选推送观察限1至120整数秒，订阅和清理分别限20秒；订阅失败也尝试退订，所有证券的清理都会执行。观察结束后旧回调不再改变已交付样本；迟到订阅确认触发补偿退订。无法证实清理成功的上下文不能重用观察。CLI 在刷新标准输出后退出，结束可能仍持有原生连接的独立进程；等待超时不等于供应商确认取消。以上定时界限依赖 Node 事件循环正常运行，不是对主机卡死或原生同步阻塞的保证。
+
+推送报告的 `observedDelayMs` 是应用接收时间与供应商标记时间加一分钟之差；时间戳含义和主机时钟未验证，负值保留，不能称为已验证闭合延迟或实时 SLA。没有闭合事件时报告 `EMPTY`，不能据此证明有权限或无权限。
 
 查询历史 K 线没有确认字段，所以返回 `finality: UNKNOWN`，不能仅因时间已过就直接提升为闭合输入。推送使用 Confirmed 模式并保存 SDK 的 `isConfirmed`，但仍需实测其时间戳、最终状态、重连与修订语义。Node SDK 5.2.0 `PushTrades` 类型没有包级顺序号；本实现不会从本地序号制造 LIVE_TICK 能力。
 
