@@ -391,7 +391,11 @@ export class MarketWorker {
     return withDeadline(
       () => {
         this.providerPending = true;
-        const pending = Promise.resolve().then(operation);
+        const pending = Promise.resolve().then(() => {
+          // stop() can run between pollOnce() returning and this microtask.
+          if (this.stopped) throw new WorkerFailure("WORKER_STOPPED");
+          return operation();
+        });
         // Settlement releases only the request lane, never writes data or changes a stopped worker.
         void pending.then(
           () => {

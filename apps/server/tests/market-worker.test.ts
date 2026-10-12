@@ -595,6 +595,18 @@ describe("server-owned daily evidence worker", () => {
 });
 
 describe("worker external-operation deadlines", () => {
+  it("does not initialize the SDK if stopped before the deferred factory starts", async () => {
+    const factory = vi.fn(async () => fakeAdapter(async () => []));
+    const ctx = setup({ adapterFactory: factory });
+    const poll = ctx.worker.pollOnce();
+    await ctx.worker.stop();
+    await poll;
+    expect(factory).not.toHaveBeenCalled();
+    expect(ctx.worker.status()).toMatchObject({
+      state: "STOPPED",
+      requestCount: 0,
+    });
+  });
   it("leaves POLLING on timeout, holds the single request lane, and discards late samples before retrying", async () => {
     vi.useFakeTimers();
     let complete!: (samples: ProviderBarSample[]) => void;
