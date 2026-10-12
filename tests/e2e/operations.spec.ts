@@ -47,6 +47,64 @@ async function researchState(page: Page) {
   };
 }
 
+test("encoded API paths retain the private browser security boundary", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.getByLabel("访问密码")).toBeVisible();
+  // Browser fetch exercises the production router and static wildcard together.
+  const anonymous = await page.evaluate(async () => {
+    const results = [];
+    for (const path of [
+      "/api/bootstrap",
+      "/%61pi/bootstrap",
+      "/a%70i/operations/status",
+      "/ap%69/events/stream",
+      "/%61pi/instruments/PRIVATE.US/provider-receipts?period=1m",
+    ]) {
+      const response = await fetch(path);
+      results.push({
+        path,
+        status: response.status,
+        code: (await response.json()).code,
+        cache: response.headers.get("cache-control"),
+      });
+    }
+    return results;
+  });
+  for (const result of anonymous)
+    expect(result, result.path).toMatchObject({
+      status: 401,
+      code: "UNAUTHENTICATED",
+      cache: "no-store",
+    });
+  const denied = await page.request.post("/%61pi/universe", {
+    headers,
+    data: { symbol: "DENIED.US", market: "US" },
+  });
+  expect(denied.status()).toBe(401);
+  await login(page);
+  const before = await researchState(page);
+  const csrf = await page.request.post("/a%70i/universe", {
+    data: { symbol: "DENIED.US", market: "US" },
+  });
+  expect(csrf.status()).toBe(403);
+  expect((await csrf.json()).code).toBe("CSRF_REJECTED");
+  const foreign = await page.request.post("/ap%69/universe", {
+    headers: { ...headers, Origin: "https://untrusted.example" },
+    data: { symbol: "DENIED.US", market: "US" },
+  });
+  expect(foreign.status()).toBe(403);
+  expect((await foreign.json()).code).toBe("ORIGIN_REJECTED");
+  expect(await researchState(page)).toEqual(before);
+  expect(
+    before.instruments.some((instrument) => instrument.symbol === "DENIED.US"),
+  ).toBe(false);
+  const encoded = await page.request.get("/%61pi/bootstrap");
+  expect(encoded.status()).toBe(200);
+  expect((await encoded.json()).instruments).toEqual(before.instruments);
+});
+
 test("private diagnostics are loaded on demand and export only a read-only redacted report", async ({
   page,
 }) => {
