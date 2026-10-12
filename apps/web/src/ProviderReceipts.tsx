@@ -58,6 +58,7 @@ export function ProviderReceipts({
           <label className="evidence-version-label">
             请求周期
             <select
+              aria-label="请求周期"
               value={scope}
               onChange={(e) => setScope(e.target.value as ReceiptScope)}
             >
@@ -155,6 +156,7 @@ function ReceiptBrowser({
               <label className="evidence-version-label">
                 收录回执
                 <select
+                  aria-label="收录回执"
                   value={selected ?? ""}
                   onChange={(e) => setSelected(Number(e.target.value))}
                   disabled={loading}
