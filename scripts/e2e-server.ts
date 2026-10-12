@@ -20,4 +20,11 @@ if (
   const { seedMarketSampling } = await import("./e2e-market-sampling.js");
   await seedMarketSampling(process.env.PULLBACK_DB);
 }
+if (
+  process.env.NODE_ENV === "test" &&
+  process.env.RESEARCH_HISTORY_E2E === "1"
+) {
+  const { seedResearchHistory } = await import("./e2e-research-history.js");
+  await seedResearchHistory(process.env.PULLBACK_DB);
+}
 await import("../apps/server/main.js");
