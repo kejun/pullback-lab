@@ -28,6 +28,7 @@ import {
   universeRevision,
 } from "./universe-service.js";
 import { registerPriceProposalRoutes } from "./price-proposal.js";
+import { registerOperationsRoutes } from "./operations-status.js";
 import { auditDecisionInput } from "./audit-replay.js";
 import {
   BoundedEventWriter,
@@ -153,9 +154,13 @@ export async function createApp(
     store.db.prepare("DELETE FROM sessions").run();
     store.setSetting("password_version", passwordVersion);
   }
-  if (options.restore || store.funds()) store.markRestored(now());
-  if (options.restore)
-    store.setSetting("event_feed_epoch", randomBytes(16).toString("hex"));
+  if (options.restore) {
+    store.transaction(() => {
+      store.markRestored(now());
+      store.db.prepare("DELETE FROM command_results").run();
+      store.setSetting("event_feed_epoch", randomBytes(16).toString("hex"));
+    });
+  } else if (store.funds()) store.markRestored(now());
   const runtime = new AttemptRuntime(store, { now });
   app.decorate("runtime", runtime);
   await app.register(cookie);
@@ -223,6 +228,12 @@ export async function createApp(
     });
   });
   registerPriceProposalRoutes(app, store);
+  registerOperationsRoutes(app, store, {
+    now,
+    secureCookies: options.secureCookies,
+    originConfigured: Boolean(options.origin),
+    marketStatus: options.marketStatus,
+  });
   app.get("/api/health", async () => ({ ok: true, dataReady: false }));
   app.get("/api/session", async (request) => ({
     authenticated: auth(request),

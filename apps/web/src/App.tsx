@@ -33,6 +33,7 @@ import { useEventFeed } from "./useEventFeed";
 import { SyntheticRuntime } from "./SyntheticRuntime";
 import { SupportEditor } from "./SupportEditor";
 import { MarketStatus } from "./MarketStatus";
+import { OperationsStatus } from "./OperationsStatus";
 import { UniverseImport, ObservationEditor } from "./UniverseEditor";
 import type { UniverseSnapshot } from "../../../packages/contracts/universe";
 import { ScreeningRulesEditor } from "./ScreeningRulesEditor";
@@ -3005,6 +3006,7 @@ export default function App() {
                   onAdopt={adoptConflictBaseline}
                 />
               )}
+              <OperationsStatus />
               <section className="settings-section">
                 <h3>行情与研究规则</h3>
                 {boot.capabilities.map((c) => (

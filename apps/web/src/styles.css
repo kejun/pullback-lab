@@ -1761,6 +1761,41 @@ details > summary {
   font-weight: 550;
   margin-bottom: 17px;
 }
+.operations-status .section-heading h3 {
+  font-size: 14px;
+  font-weight: 550;
+}
+.operations-message,
+.operations-captured {
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.operations-message {
+  margin: 8px 0;
+}
+.operations-captured {
+  margin-bottom: 16px;
+}
+.operations-summary {
+  row-gap: 10px;
+}
+.operations-status .detail-list {
+  grid-template-columns: minmax(130px, 1fr) minmax(0, 2fr);
+  font-size: 11px;
+}
+.operations-status .detail-list dd {
+  font-size: 11px;
+}
+.operations-status .operations-note {
+  margin: 16px 0;
+}
+.operations-details {
+  margin-bottom: 18px;
+}
+.operations-details .detail-list {
+  padding-top: 12px;
+}
 .capability-card {
   background: #f5f8ee;
   border: 1px solid #e4ebd8;
