@@ -1,3 +1,4 @@
+import { migrateMarketStreams } from "./market-stream-schema.js";
 import type Database from "better-sqlite3";
 import { MARKET_WORKER_SCHEMA_SQL } from "./market-worker.js";
 import { BAR_REPOSITORY_SCHEMA_SQL } from "../../packages/market-data/ingestion.js";
@@ -89,6 +90,7 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
         "CREATE INDEX market_raw_identity_sequence ON market_raw_inputs(logical_key,ingest_sequence)",
       ),
   },
+  { version: 8, apply: migrateMarketStreams },
 ];
 
 /** All pending DDL and version records commit together, or all roll back. */

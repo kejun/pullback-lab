@@ -42,7 +42,7 @@ npm run test:e2e
 
 SQLite 使用 WAL、`synchronous=FULL`、`BEGIN IMMEDIATE` 和事件唯一约束。事件保存冻结输入与哈希；前端重连可重复投递，按事件 ID 合并。资金变更使用 generation 校验，计划操作同时校验 version 与 attemptId；旧表单或旧标签页返回 409 并保留输入。
 
-服务启动会校验 SQLite 实际版本、取得单实例锁并事务迁移数据库。支撑家族、容差和输入版本由服务端冻结；提醒页可只读重放原始判断、查看实际交易偏离及反馈修订历史。日线采样默认关闭，显式启用配置和隔离范围见操作说明。
+服务启动会校验 SQLite 实际版本、取得单实例锁并事务迁移数据库。支撑家族、容差和输入版本由服务端冻结；提醒页可只读重放原始判断、查看实际交易偏离及反馈修订历史。行情采样默认关闭。可额外选择最多十只已有研究标的采集 1/5 分钟历史；各周期独立记录进度、空结果和失败，分钟样本保持隔离。配置见[分钟历史采样](docs/minute-sampling.md)。
 
 候选页支持单个或 CSV 批量加入人工观察列表，原子校验最多 100 只研究标的；标签和笔记用版本校验防止并发覆盖。设置页可确认并保存 ADV、ADR 和每市场排名上限的新规则版本，旧计划与回放保留原依据。人工身份与筛选结论分开展示；数据截止、缺失原因、成交额来源和供应商配额未知状态均可查看。
 
@@ -78,6 +78,7 @@ npm run probe -- --symbols AAPL.US --observe-seconds 30 --output probe-evidence.
 - [第八批实现与验证](docs/acceptance-v8.md)
 - [第九批实现与验证](docs/acceptance-v9.md)
 - [第十批实现与验证](docs/acceptance-v10.md)
+- [第十一批实现与验证](docs/acceptance-v11.md)
 - [单主机私有部署](docs/deployment.md)
 - [私有部署与备份恢复](docs/operations.md)
 
