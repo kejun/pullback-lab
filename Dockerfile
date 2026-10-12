@@ -1,14 +1,26 @@
 FROM node:24-bookworm-slim AS build
 WORKDIR /app
+# Native SQLite bindings can fall back to a source build on the target CPU.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
 RUN npm ci
 COPY . .
 RUN npm run build && npm prune --omit=dev
 FROM node:24-bookworm-slim
-ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 PULLBACK_DB=/app/data/pullback.sqlite
+ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 PULLBACK_DB=/app/data/pullback.sqlite \
+    PULLBACK_DEMO=0 PULLBACK_MARKET_WORKER=0
 WORKDIR /app
-COPY --from=build /app /app
-RUN mkdir -p /app/data && chown -R node:node /app
+COPY --from=build /app/package*.json /app/tsconfig.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/apps/server ./apps/server
+COPY --from=build /app/packages ./packages
+COPY --from=build /app/scripts ./scripts
+COPY --from=build /app/dist ./dist
+RUN mkdir -p /app/data && chown node:node /app/data
 USER node
 EXPOSE 3000
-CMD ["npm","start"]
+# A missing market-data entitlement is not a dead process.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD ["node", "--input-type=module", "-e", "try { const r = await fetch('http://127.0.0.1:' + (process.env.PORT || '3000') + '/api/health', { signal: AbortSignal.timeout(4000) }); if (!r.ok || (await r.json()).ok !== true) process.exit(1); } catch { process.exit(1); }"]
+CMD ["node", "--import", "tsx", "apps/server/main.ts"]
