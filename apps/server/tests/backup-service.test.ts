@@ -90,7 +90,7 @@ describe("verified online backup", () => {
       .run();
     try {
       expect(await backupDatabase(source, target)).toEqual({
-        schemaVersion: 6,
+        schemaVersion: 7,
       });
     } finally {
       writer.exec("ROLLBACK");
@@ -149,7 +149,7 @@ describe("verified online backup", () => {
     expect(
       results.find((result) => result.status === "rejected"),
     ).toMatchObject({ reason: { code: "BACKUP_TARGET_EXISTS" } });
-    expect(schema(open(target))).toEqual({ version: 6 });
+    expect(schema(open(target))).toEqual({ version: 7 });
     noPartials(dir);
   });
 
@@ -263,7 +263,7 @@ describe("offline new-path restore", () => {
       rows: store.db.prepare(`SELECT * FROM ${table}`).all(),
     }));
     await expect(restoreDatabase(source, target)).resolves.toEqual({
-      schemaVersion: 6,
+      schemaVersion: 7,
     });
     const restored = current(target);
     expect(count(restored.db, "sessions")).toBe(0);
@@ -328,12 +328,12 @@ describe("offline new-path restore", () => {
     legacy.close();
     const original = readFileSync(source);
     await expect(restoreDatabase(source, target)).resolves.toEqual({
-      schemaVersion: 6,
+      schemaVersion: 7,
     });
     expect(readFileSync(source)).toEqual(original);
     expect(schema(open(source))).toEqual({ version: 1 });
     const restored = open(target);
-    expect(schema(restored)).toEqual({ version: 6 });
+    expect(schema(restored)).toEqual({ version: 7 });
     expect(restored.prepare("SELECT json FROM plan_versions").get()).toEqual({
       json: '{"kept":"exact"}',
     });
