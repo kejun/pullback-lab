@@ -16,6 +16,8 @@ import type {
   FeedbackDeviationCode,
   SupportPreviewInput,
   SupportSnapshot,
+  ScreeningParameters,
+  ScreeningSettings,
 } from "../../packages/contracts/index.js";
 import type {
   AttemptState,
@@ -23,6 +25,15 @@ import type {
 } from "../../packages/domain/trigger.js";
 import { solveRisk } from "../../packages/domain/risk.js";
 import { freezeSupport } from "../../packages/domain/plan-support.js";
+import {
+  DEFAULT_SCREENING_PARAMETERS,
+  normalizeScreeningParameters,
+} from "../../packages/domain/screening-rules.js";
+import {
+  currentScreeningRule,
+  insertScreeningRule,
+  makeScreeningRule,
+} from "./screening-settings.js";
 import { initializeDatabase } from "./migrations.js";
 import { eventPage, eventFeed, type EventPageQuery } from "./events-feed.js";
 
@@ -107,6 +118,54 @@ export class Store {
         "INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
       )
       .run(key, value);
+  }
+  screeningSettings(): ScreeningSettings {
+    const current = currentScreeningRule(this.db);
+    return {
+      version: current?.version ?? 0,
+      current,
+      defaultParameters: DEFAULT_SCREENING_PARAMETERS,
+    };
+  }
+  confirmScreening(
+    parameters: ScreeningParameters | undefined,
+    expectedVersion: number | undefined,
+    now: number,
+  ): ScreeningSettings {
+    return this.transaction(() => {
+      const current = currentScreeningRule(this.db);
+      // The old one-click endpoint can confirm defaults only once. Its retries never overwrite a later version.
+      if (parameters === undefined && current) return this.screeningSettings();
+      if (
+        parameters !== undefined &&
+        expectedVersion !== (current?.version ?? 0)
+      )
+        throw new ApiError(
+          409,
+          "SCREENING_VERSION_CONFLICT",
+          "筛选参数已有新版本，请读取后重新确认；输入已保留",
+        );
+      let normalized: ScreeningParameters;
+      try {
+        normalized = normalizeScreeningParameters(
+          parameters === undefined ? DEFAULT_SCREENING_PARAMETERS : parameters,
+        );
+      } catch {
+        throw new ApiError(
+          400,
+          "INVALID_SCREENING_PARAMETERS",
+          "筛选参数须使用有效十进制金额、ADR 范围及 1–30 的每市场上限",
+        );
+      }
+      const rule = makeScreeningRule(
+        (current?.version ?? 0) + 1,
+        normalized,
+        now,
+      );
+      insertScreeningRule(this.db, rule);
+      this.setSetting("screening_confirmed", "true");
+      return this.screeningSettings();
+    });
   }
   listInstruments(): StoredInstrument[] {
     return (
@@ -307,6 +366,7 @@ export class Store {
       this.instrument(input.instrumentId);
       const p: Plan = {
         ...input,
+        screeningRuleSnapshot: currentScreeningRule(this.db),
         supportSnapshot: this.supportPreview(
           input,
           now,
@@ -362,6 +422,7 @@ export class Store {
       this.release(id);
       const p: Plan = {
         ...input,
+        screeningRuleSnapshot: currentScreeningRule(this.db),
         supportSnapshot: this.supportPreview(
           input,
           now,

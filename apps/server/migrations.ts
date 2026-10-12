@@ -4,6 +4,7 @@ import { BAR_REPOSITORY_SCHEMA_SQL } from "../../packages/market-data/ingestion.
 import { assertSQLiteRuntime, RuntimeSafetyError } from "./runtime-safety.js";
 import { ATTEMPT_RUNTIME_SCHEMA_SQL } from "./attempt-runtime-schema.js";
 import { EVENT_FEED_SCHEMA_SQL } from "./events-feed.js";
+import { migrateScreeningRules } from "./screening-settings.js";
 
 export interface DatabaseMigration {
   version: number;
@@ -78,6 +79,7 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
       db.exec(EVENT_FEED_SCHEMA_SQL);
     },
   },
+  { version: 5, apply: migrateScreeningRules },
 ];
 
 /** All pending DDL and version records commit together, or all roll back. */
