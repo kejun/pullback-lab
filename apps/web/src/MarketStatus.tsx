@@ -37,6 +37,8 @@ const reasons: Record<string, string> = {
   SAMPLING_ONLY_CAPABILITY_UNVERIFIED: "已配置只读采样，行情能力仍待独立验证。",
   RESEARCH_POOL_EMPTY: "研究池暂无可采集的真实标的。",
   WORKER_STOPPED: "采样进程已停止。",
+  PROVIDER_REQUEST_TIMEOUT: "行情请求等待超时；原请求未结束前暂停发送新请求。",
+  PROVIDER_REQUEST_UNSETTLED: "上一次行情请求仍未结束；继续等待，不叠加请求。",
   PROVIDER_REQUEST_FAILED: "行情供应商请求失败，等待退避后重试。",
   PERSISTENCE_UNAVAILABLE: "采样证据暂时无法保存，已停止继续采集。",
   FINALITY_UNVERIFIED: "K 线最终状态未经验证，已隔离样本。",
