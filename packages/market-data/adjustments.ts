@@ -2,6 +2,22 @@ import { createHash } from "node:crypto";
 import Decimal from "decimal.js";
 import type { Bar } from "../contracts/index.js";
 const D = Decimal.clone({ precision: 50, rounding: Decimal.ROUND_HALF_EVEN });
+const timestamp = (value: number) => Number.isSafeInteger(value) && value >= 0;
+const decimal = (value: unknown) =>
+  typeof value === "string" && /^\d{1,30}(\.\d{1,20})?$/.test(value);
+/** Stable provider content excludes the local receipt time. */
+export function actionContent(a: CorporateAction): string {
+  return JSON.stringify({
+    id: a.id,
+    revision: a.revision,
+    kind: a.kind,
+    effectiveAt: a.effectiveAt,
+    publishedAt: a.publishedAt,
+    source: a.source,
+    sharesAfter: a.sharesAfter,
+    sharesBefore: a.sharesBefore,
+  });
+}
 export interface CorporateAction {
   id: string;
   revision: number;
@@ -55,13 +71,11 @@ export function adjustForSplits(
     bars: [],
     reason,
   });
-  if (
-    !Number.isSafeInteger(asOf) ||
-    !Number.isSafeInteger(basisAt) ||
-    basisAt > asOf
-  )
+  if (!timestamp(asOf) || !timestamp(basisAt) || basisAt > asOf)
     return bad("ADJUSTMENT_CUTOFF_INVALID");
   const c = dataset.coverage;
+  if (bars.length > 10000 || dataset.actions.length > 5000)
+    return bad("ADJUSTMENT_INPUT_LIMIT");
   const first = bars.length
     ? Math.min(...bars.map((x) => x.time * 1000))
     : basisAt;
@@ -69,6 +83,8 @@ export function adjustForSplits(
     !c.verified ||
     !c.source ||
     !c.version ||
+    ![c.from, c.through, c.knownAt].every(timestamp) ||
+    c.through < c.from ||
     c.knownAt > asOf ||
     c.from > first ||
     c.through < basisAt
@@ -78,20 +94,59 @@ export function adjustForSplits(
     return bad("BAR_NOT_KNOWN_AT_CUTOFF");
   if (bars.some((x) => x.adjustmentVersion !== "raw-v1"))
     return bad("RAW_PRICE_VOLUME_REQUIRED");
+  if (
+    bars.some(
+      (x) =>
+        !timestamp(x.time * 1000) ||
+        !timestamp(x.receivedAt) ||
+        x.receivedAt < x.time * 1000 ||
+        !x.final ||
+        ![x.open, x.high, x.low, x.close, x.volume].every(decimal) ||
+        (x.turnover !== undefined && !decimal(x.turnover)),
+    )
+  )
+    return bad("RAW_BAR_INVALID");
+  if (
+    bars.some(
+      (x) =>
+        new D(x.low).lte(0) ||
+        new D(x.high).lt(x.low) ||
+        new D(x.open).lt(x.low) ||
+        new D(x.open).gt(x.high) ||
+        new D(x.close).lt(x.low) ||
+        new D(x.close).gt(x.high),
+    )
+  )
+    return bad("RAW_BAR_INVALID");
   const latest = new Map<string, CorporateAction>();
+  const revisions = new Map<string, string>();
   for (const a of dataset.actions) {
+    if (
+      ![a.effectiveAt, a.publishedAt, a.receivedAt].every(timestamp) ||
+      a.receivedAt < a.publishedAt
+    )
+      return bad("ACTION_PROVENANCE_INVALID");
     if (a.publishedAt > asOf || a.receivedAt > asOf) continue;
     if (
       !a.source ||
       !a.id ||
       !Number.isSafeInteger(a.revision) ||
-      a.revision < 1
+      a.revision < 1 ||
+      !["SPLIT", "CASH_DIVIDEND"].includes(a.kind)
     )
       return bad("ACTION_PROVENANCE_INVALID");
-    const p = latest.get(a.id);
-    if (p?.revision === a.revision && JSON.stringify(p) !== JSON.stringify(a))
+    const key = JSON.stringify([a.id, a.revision]);
+    const content = actionContent(a);
+    if (revisions.has(key) && revisions.get(key) !== content)
       return bad("ACTION_REVISION_CONFLICT");
-    if (!p || a.revision > p.revision) latest.set(a.id, a);
+    revisions.set(key, content);
+    const p = latest.get(a.id);
+    if (
+      !p ||
+      a.revision > p.revision ||
+      (a.revision === p.revision && a.receivedAt < p.receivedAt)
+    )
+      latest.set(a.id, a);
   }
   const eligible = [...latest.values()]
     .filter((x) => x.effectiveAt <= basisAt)
@@ -100,27 +155,35 @@ export function adjustForSplits(
     if (
       !a.sharesAfter ||
       !a.sharesBefore ||
-      !/^\d+(\.\d+)?$/.test(a.sharesAfter) ||
-      !/^\d+(\.\d+)?$/.test(a.sharesBefore) ||
+      !decimal(a.sharesAfter) ||
+      !decimal(a.sharesBefore) ||
       new D(a.sharesAfter).lte(0) ||
       new D(a.sharesBefore).lte(0)
     )
       return bad("SPLIT_FACTOR_INVALID");
   }
   const version =
-    "split-only-v1:" +
+    "split-only-v2:" +
     createHash("sha256")
       .update(
-        JSON.stringify({ coverage: c.version, basisAt, actions: eligible }),
+        JSON.stringify({
+          coverage: c.version,
+          basisAt,
+          actions: eligible.map((a) => [actionContent(a), a.receivedAt]),
+        }),
       )
       .digest("hex")
       .slice(0, 20);
-  const output = bars.map((raw) => {
+  const output: SplitAdjustedBar[] = [];
+  for (const raw of bars) {
     let ratio = new D(1);
     for (const a of eligible)
-      if (a.kind === "SPLIT" && raw.time * 1000 < a.effectiveAt)
+      if (a.kind === "SPLIT" && raw.time * 1000 < a.effectiveAt) {
         ratio = ratio.mul(a.sharesAfter!).div(a.sharesBefore!);
-    return {
+        if (!ratio.isFinite() || ratio.lte(0) || Math.abs(ratio.e) > 100)
+          return bad("ADJUSTMENT_FACTOR_OUT_OF_RANGE");
+      }
+    output.push({
       ...raw,
       open: new D(raw.open).div(ratio).toFixed(),
       high: new D(raw.high).div(ratio).toFixed(),
@@ -135,8 +198,8 @@ export function adjustForSplits(
       rawTurnover: raw.turnover,
       priceFactor: new D(1).div(ratio).toFixed(),
       volumeFactor: ratio.toFixed(),
-    };
-  });
+    });
+  }
   return {
     ok: true,
     bars: output,

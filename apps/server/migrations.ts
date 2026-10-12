@@ -5,6 +5,7 @@ import { assertSQLiteRuntime, RuntimeSafetyError } from "./runtime-safety.js";
 import { ATTEMPT_RUNTIME_SCHEMA_SQL } from "./attempt-runtime-schema.js";
 import { EVENT_FEED_SCHEMA_SQL } from "./events-feed.js";
 import { migrateScreeningRules } from "./screening-settings.js";
+import { ACTION_EVIDENCE_SCHEMA_SQL } from "../../packages/market-data/action-evidence.js";
 
 export interface DatabaseMigration {
   version: number;
@@ -80,6 +81,7 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     },
   },
   { version: 5, apply: migrateScreeningRules },
+  { version: 6, apply: (db) => db.exec(ACTION_EVIDENCE_SCHEMA_SQL) },
 ];
 
 /** All pending DDL and version records commit together, or all roll back. */

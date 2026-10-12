@@ -1,0 +1,44 @@
+{
+  "schema": "pullback-lab-actions-v1",
+  "instrumentId": "DEMO-US-A",
+  "market": "US",
+  "expectedVersion": null,
+  "source": "synthetic-fixture",
+  "review": {
+    "reviewer": "fixture-reviewer",
+    "confirmed": true
+  },
+  "coverage": {
+    "from": 0,
+    "through": 3000000,
+    "status": "COMPLETE",
+    "documentIds": [
+      "doc"
+    ],
+    "reason": "完整合成窗口"
+  },
+  "removedActionIds": [],
+  "documents": [
+    {
+      "id": "doc",
+      "url": "https://example.invalid/synthetic",
+      "publishedAt": 1000000,
+      "content": "SYNTHETIC TEST ONLY: 2 shares after for each 1 share before; full synthetic window.",
+      "sha256": "3122e45d6d1bd29380455f96be93b36c44d6236f5ee76f1400871abf338bf1c1"
+    }
+  ],
+  "actions": [
+    {
+      "id": "split",
+      "revision": 1,
+      "kind": "SPLIT",
+      "effectiveAt": 2000000,
+      "publishedAt": 1500000,
+      "sharesAfter": "2",
+      "sharesBefore": "1",
+      "documentIds": [
+        "doc"
+      ]
+    }
+  ]
+}

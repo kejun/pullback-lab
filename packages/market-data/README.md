@@ -40,3 +40,7 @@ node --import tsx scripts/probe.ts --symbols AAPL.US,600519.SH --observe-seconds
 查询历史 K 线没有确认字段，所以返回 `finality: UNKNOWN`，不能仅因时间已过就直接提升为闭合输入。推送使用 Confirmed 模式并保存 SDK 的 `isConfirmed`，但仍需实测其时间戳、最终状态、重连与修订语义。Node SDK 5.2.0 `PushTrades` 类型没有包级顺序号；本实现不会从本地序号制造 LIVE_TICK 能力。
 
 真实使用还需：有效分钟与价格单位证据、公司行动完整来源、交易规则与日历小时、额度与缓存许可、价格和成本上限，以及目标主机连续观测。`fetchDailyHistory` 每个分页都要求调用方先通过额度准入；探针原始样本不能直接进入生产计算。
+
+## 公司行动证据版本
+
+`ActionEvidenceRepository` 保存人工审核清单、原始来源文本、哈希、覆盖范围及系统接收时刻。生产入口使用 `Store.importActionEvidence`，将证据写入与计划暂停置于同一事务。低层 repository 不独立承担计划生命周期。未知覆盖不回退，历史审计可指定冻结证据版本；`adjustForSplits` 的输出版本升级为 split-only-v2，增加时间、量价、重复修订冲突和累计因子校验。详细操作与未完成条件见 [公司行动证据导入](../../docs/corporate-actions.md)。
