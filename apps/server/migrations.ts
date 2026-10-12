@@ -2,6 +2,8 @@ import type Database from "better-sqlite3";
 import { MARKET_WORKER_SCHEMA_SQL } from "./market-worker.js";
 import { BAR_REPOSITORY_SCHEMA_SQL } from "../../packages/market-data/ingestion.js";
 import { assertSQLiteRuntime, RuntimeSafetyError } from "./runtime-safety.js";
+import { ATTEMPT_RUNTIME_SCHEMA_SQL } from "./attempt-runtime-schema.js";
+import { EVENT_FEED_SCHEMA_SQL } from "./events-feed.js";
 
 export interface DatabaseMigration {
   version: number;
@@ -67,6 +69,13 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     apply(db) {
       db.exec(BAR_REPOSITORY_SCHEMA_SQL);
       db.exec(MARKET_WORKER_SCHEMA_SQL);
+    },
+  },
+  {
+    version: 4,
+    apply(db) {
+      db.exec(ATTEMPT_RUNTIME_SCHEMA_SQL);
+      db.exec(EVENT_FEED_SCHEMA_SQL);
     },
   },
 ];

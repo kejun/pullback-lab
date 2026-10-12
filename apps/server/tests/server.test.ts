@@ -272,7 +272,9 @@ describe("private API and durable workflow", () => {
     const bootstrap = (
       await f.app.inject({ url: "/api/bootstrap", headers: f.headers })
     ).json();
-    expect(bootstrap.events[1]).toMatchObject({
+    expect(
+      bootstrap.events.find((event: { id: string }) => event.id === result.id),
+    ).toMatchObject({
       feedback: "SKIPPED",
       read: true,
     });
@@ -485,22 +487,63 @@ describe("private API and durable workflow", () => {
       (await f.post("/api/plans", { ...input, stop: "99.405" })).statusCode,
     ).toBe(400);
   });
-  it("resumes SSE from a durable event id, leaves it unread and reports unknown cursors", async () => {
+  it("returns consistent runtime envelopes and isolates step execution from legacy replay", async () => {
     const f = await setup();
     const p = await activated(f);
+    const command = {
+      expectedVersion: p.version,
+      expectedAttemptId: p.attemptId,
+    };
+    const start = await f.post(
+      `/api/demo/plans/${p.id}/runtime/start`,
+      command,
+    );
+    expect(start.statusCode).toBe(200);
+    expect(start.json().runtime).toMatchObject({
+      attemptId: p.attemptId,
+      step: 0,
+    });
+    const next = await f.post(`/api/demo/plans/${p.id}/runtime/step`, {
+      ...command,
+      expectedStep: 0,
+      count: 1,
+    });
+    expect(next.statusCode).toBe(200);
+    expect(next.json().runtime.step).toBeGreaterThan(0);
+    const read = (
+      await f.app.inject({
+        url: `/api/demo/plans/${p.id}/runtime`,
+        headers: f.headers,
+      })
+    ).json();
+    expect(read.runtime.step).toBe(next.json().runtime.step);
+    expect((await f.post(`/api/demo/plans/${p.id}/replay`)).json().code).toBe(
+      "RUNTIME_ALREADY_STARTED",
+    );
+    const live = await setup(false);
+    expect(
+      (await live.post(`/api/demo/plans/${p.id}/runtime/start`, command))
+        .statusCode,
+    ).toBe(404);
+  });
+  it("resumes SSE from a durable feed cursor, leaves it unread and reports unknown cursors", async () => {
+    const f = await setup();
+    const p = await activated(f);
+    const cursor = f.app.store.eventPage().feedCursor;
     const events = await replay(f, p);
     const address = await f.app.listen({ host: "127.0.0.1", port: 0 });
     const controller = new AbortController();
     const response = await fetch(`${address}/api/events/stream`, {
-      headers: { cookie: f.cookie, "last-event-id": events[0].id },
+      headers: { cookie: f.cookie, "last-event-id": cursor },
       signal: controller.signal,
     });
     expect(response.status).toBe(200);
     const reader = response.body!.getReader();
     const text = new TextDecoder().decode((await reader.read()).value);
     controller.abort();
-    expect(text).toContain(`id: ${events[1].id}`);
-    expect(text).not.toContain(`id: ${events[0].id}`);
+    expect(text).toContain(`"id":"${events[1].id}"`);
+    expect(text).toContain(`"id":"${events[0].id}"`);
+    expect(text).not.toContain("sourceBars");
     expect(f.app.store.event(events[1].id).read).toBe(false);
     expect(
       (

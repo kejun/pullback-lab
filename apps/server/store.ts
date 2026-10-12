@@ -17,9 +17,14 @@ import type {
   SupportPreviewInput,
   SupportSnapshot,
 } from "../../packages/contracts/index.js";
+import type {
+  AttemptState,
+  TriggerEvent,
+} from "../../packages/domain/trigger.js";
 import { solveRisk } from "../../packages/domain/risk.js";
 import { freezeSupport } from "../../packages/domain/plan-support.js";
 import { initializeDatabase } from "./migrations.js";
+import { eventPage, eventFeed, type EventPageQuery } from "./events-feed.js";
 
 export class ApiError extends Error {
   constructor(
@@ -838,6 +843,97 @@ export class Store {
       return [technical, final];
     });
   }
+  /** Persist only trusted synthetic runner results; real capability remains closed. */
+  commitRuntimeTransition(
+    id: string,
+    expectedVersion: number,
+    attemptId: string,
+    state: AttemptState,
+    events: TriggerEvent[],
+    snapshot: Record<string, unknown>,
+    now: number,
+  ): void {
+    this.transaction(() => {
+      const p = this.plan(id);
+      this.assertVersion(p, expectedVersion);
+      if (
+        p.attemptId !== attemptId ||
+        state.attemptId !== attemptId ||
+        state.planVersion !== expectedVersion
+      )
+        throw new ApiError(409, "ATTEMPT_CONFLICT", "当前尝试已改变");
+      if (snapshot.synthetic !== true || !p.instrumentId.startsWith("DEMO-"))
+        throw new ApiError(
+          422,
+          "SYNTHETIC_ONLY",
+          "运行入口只接受服务端合成历史输入",
+        );
+      const attempt = this.db
+        .prepare("SELECT consumed FROM attempts WHERE id=?")
+        .get(attemptId) as { consumed: number } | undefined;
+      if (!attempt)
+        throw new ApiError(409, "ATTEMPT_MISSING", "当前计划尚未启用");
+      if (state.status === "EXPIRED" && state.consumed && !attempt.consumed)
+        this.db
+          .prepare("UPDATE attempts SET consumed=1,json=? WHERE id=?")
+          .run(json({ ...snapshot, consumed: true }), attemptId);
+      if (!attempt.consumed) {
+        if (["INVALID", "EXPIRED", "USER_PAUSED"].includes(state.status))
+          this.release(id);
+        if (
+          [
+            "WAIT_RETEST",
+            "ARMED",
+            "DATA_PAUSED",
+            "INVALID",
+            "EXPIRED",
+            "USER_PAUSED",
+          ].includes(state.status)
+        )
+          this.writePlan({ ...p, status: state.status, updatedAt: now });
+      }
+      for (const event of events) {
+        const lateReference =
+          state.status === "EXPIRED" &&
+          state.consumed &&
+          event.type === "TECHNICAL_TRIGGERED";
+        if (
+          [
+            "TECHNICAL_TRIGGERED",
+            "ENTRY_TRIGGERED",
+            "HISTORICAL_TRIGGERED",
+          ].includes(event.type) &&
+          !lateReference
+        )
+          continue;
+        if (
+          attempt.consumed &&
+          !["BREAKOUT_FADED", "STOP_REFERENCE_TOUCHED", "DATA_PAUSED"].includes(
+            event.type,
+          ) &&
+          !lateReference
+        )
+          continue;
+        const type = lateReference ? "LATE_TECHNICAL_REFERENCE" : event.type;
+        // The pure reducer's emitted evidence stays untouched in snapshot. This
+        // server-owned synthetic adapter marks its persisted presentation historical.
+        this.insertEvent(
+          p,
+          type,
+          `${attemptId}:runtime:${type}`,
+          event.time,
+          event.receivedAt,
+          lateReference
+            ? "合成迟到技术参考：尝试已过期，不恢复预算或入场提醒"
+            : `合成运行：${type}`,
+          event.reasons,
+          lateReference ? null : (event.quantity ?? null),
+          true,
+          snapshot,
+        );
+      }
+    });
+  }
   recordReplayState(
     id: string,
     expected: number,
@@ -873,6 +969,12 @@ export class Store {
         ),
       ];
     });
+  }
+  eventPage(query: EventPageQuery = {}) {
+    return eventPage(this.db, query);
+  }
+  eventFeed(after?: string) {
+    return eventFeed(this.db, after);
   }
   events(after?: string): DecisionEvent[] {
     let seq = 0;

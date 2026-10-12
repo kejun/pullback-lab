@@ -185,7 +185,7 @@ describe("transactional schema migration and immutable facts", () => {
     const first = db
       .prepare("SELECT * FROM schema_migrations ORDER BY version")
       .all();
-    expect(first).toHaveLength(3);
+    expect(first).toHaveLength(4);
     expect(db.prepare("SELECT json FROM plan_versions").get()).toEqual({
       json: '{"frozen":"plan"}',
     });
@@ -279,7 +279,7 @@ describe("transactional schema migration and immutable facts", () => {
       runMigrations(db, [
         ...DATABASE_MIGRATIONS,
         {
-          version: 4,
+          version: 5,
           apply(connection) {
             connection.exec(
               "CREATE TABLE should_rollback(id INTEGER); UPDATE settings SET value='999';",
@@ -295,7 +295,7 @@ describe("transactional schema migration and immutable facts", () => {
     expect(
       db
         .prepare(
-          "SELECT name FROM sqlite_master WHERE type='trigger' OR name='should_rollback' OR name LIKE 'market_%'",
+          "SELECT name FROM sqlite_master WHERE type='trigger' OR name='should_rollback' OR name LIKE 'market_%' OR name LIKE 'runtime_%' OR name LIKE 'event_%'",
         )
         .all(),
     ).toEqual([]);
@@ -307,12 +307,12 @@ describe("transactional schema migration and immutable facts", () => {
       db
         .prepare("SELECT version FROM schema_migrations ORDER BY version")
         .all(),
-    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
   });
   it("refuses newer or discontinuous schema histories", () => {
     const newer = database();
     initializeDatabase(newer);
-    newer.prepare("INSERT INTO schema_migrations VALUES(4,1)").run();
+    newer.prepare("INSERT INTO schema_migrations VALUES(5,1)").run();
     expect(() => runMigrations(newer)).toThrow("更新版本");
     const gap = v1Database();
     gap.exec("INSERT INTO schema_migrations VALUES(3,1)");

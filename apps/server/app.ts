@@ -28,7 +28,14 @@ import {
 } from "../../packages/market-data/index.js";
 import { ApiError, Store } from "./store.js";
 import { replayPlan } from "./replay.js";
+import { AttemptRuntime } from "./attempt-runtime.js";
+import { registerPriceProposalRoutes } from "./price-proposal.js";
 import { auditDecisionInput } from "./audit-replay.js";
+import {
+  BoundedEventWriter,
+  EventCursorError,
+  EVENT_PAGE_LIMIT,
+} from "./events-feed.js";
 import {
   emptyMarketWorkerStatus,
   type MarketWorkerStatus,
@@ -45,7 +52,10 @@ export interface AppOptions {
   restore?: boolean;
   marketStatus?: () => MarketWorkerStatus;
 }
-export type PullbackApp = FastifyInstance & { store: Store };
+export type PullbackApp = FastifyInstance & {
+  store: Store;
+  runtime: AttemptRuntime;
+};
 const numeric = z
   .string()
   .max(80)
@@ -145,6 +155,10 @@ export async function createApp(
     store.setSetting("password_version", passwordVersion);
   }
   if (options.restore || store.funds()) store.markRestored(now());
+  if (options.restore)
+    store.setSetting("event_feed_epoch", randomBytes(16).toString("hex"));
+  const runtime = new AttemptRuntime(store, { now });
+  app.decorate("runtime", runtime);
   await app.register(cookie);
   const auth = (request: FastifyRequest) => {
     const token = request.cookies.pullback_session;
@@ -189,7 +203,7 @@ export async function createApp(
           .join("；"),
         code: "INVALID_INPUT",
       });
-    if (error instanceof ApiError)
+    if (error instanceof ApiError || error instanceof EventCursorError)
       return reply
         .status(error.statusCode)
         .send({ error: error.message, code: error.code });
@@ -209,6 +223,7 @@ export async function createApp(
       code: "INTERNAL_ERROR",
     });
   });
+  registerPriceProposalRoutes(app, store);
   app.get("/api/health", async () => ({ ok: true, dataReady: false }));
   app.get("/api/session", async (request) => ({
     authenticated: auth(request),
@@ -260,15 +275,21 @@ export async function createApp(
     reply.clearCookie("pullback_session", { path: "/" });
     return { ok: true };
   });
-  app.get("/api/bootstrap", async () => ({
-    demo,
-    capabilities: getUnknownCapabilities(),
-    instruments: store.listInstruments().map((x) => x.instrument),
-    plans: store.plans(),
-    funds: store.funds(),
-    events: store.events(),
-    screeningConfirmed: store.setting("screening_confirmed") === "true",
-  }));
+  app.get("/api/bootstrap", async () =>
+    store.db.transaction(() => {
+      const page = store.eventPage();
+      return {
+        demo,
+        capabilities: getUnknownCapabilities(),
+        instruments: store.listInstruments().map((x) => x.instrument),
+        plans: store.plans(),
+        funds: store.funds(),
+        events: page.events,
+        eventPage: page,
+        screeningConfirmed: store.setting("screening_confirmed") === "true",
+      };
+    })(),
+  );
   app.get(
     "/api/market/status",
     async () => options.marketStatus?.() ?? emptyMarketWorkerStatus(),
@@ -667,9 +688,30 @@ export async function createApp(
       );
     }),
   );
-  app.get<{ Querystring: { after?: string } }>(
+  app.get<{ Querystring: { after?: string; before?: string; limit?: string } }>(
     "/api/events",
-    async (request) => ({ events: store.events(request.query.after) }),
+    async (request) => {
+      const query = z
+        .object({
+          after: z.string().min(1).max(300).optional(),
+          before: z.string().min(1).max(300).optional(),
+          limit: z.coerce
+            .number()
+            .int()
+            .min(1)
+            .max(EVENT_PAGE_LIMIT)
+            .optional(),
+        })
+        .refine(
+          (value) => !(value.before && value.after),
+          "before 与 after 不能同时使用",
+        )
+        .parse(request.query);
+      return store.eventPage(query);
+    },
+  );
+  app.get<{ Params: { id: string } }>("/api/events/:id", async (request) =>
+    store.event(request.params.id),
   );
   app.get<{ Params: { id: string } }>(
     "/api/events/:id/input",
@@ -736,12 +778,61 @@ export async function createApp(
         return { ok: true };
       }),
   );
+  const runtimeCommand = z
+    .object({
+      expectedVersion: integer.positive(),
+      expectedAttemptId: z.string().min(1).max(120),
+    })
+    .strict();
+  const runtimeGuard = () => {
+    if (!demo) throw new ApiError(404, "DEMO_DISABLED", "未启用合成演示模式");
+  };
+  app.get<{ Params: { id: string } }>(
+    "/api/demo/plans/:id/runtime",
+    async (request) => {
+      runtimeGuard();
+      return { runtime: runtime.status(request.params.id) };
+    },
+  );
+  app.post<{ Params: { id: string } }>(
+    "/api/demo/plans/:id/runtime/start",
+    async (request) => {
+      runtimeGuard();
+      return command(request, () => ({
+        runtime: runtime.start(
+          request.params.id,
+          runtimeCommand.parse(request.body),
+        ),
+      }));
+    },
+  );
+  app.post<{ Params: { id: string } }>(
+    "/api/demo/plans/:id/runtime/step",
+    async (request) => {
+      runtimeGuard();
+      const input = runtimeCommand
+        .extend({
+          expectedStep: integer,
+          count: integer.min(1).max(20).optional(),
+        })
+        .parse(request.body);
+      return command(request, () => ({
+        runtime: runtime.step(request.params.id, input),
+      }));
+    },
+  );
   app.post<{ Params: { id: string } }>(
     "/api/demo/plans/:id/replay",
     async (request) =>
       command(request, () => {
         if (!demo)
           throw new ApiError(404, "DEMO_DISABLED", "未启用合成演示模式");
+        if (runtime.status(request.params.id))
+          throw new ApiError(
+            409,
+            "RUNTIME_ALREADY_STARTED",
+            "该尝试已开始分步演练，请继续当前运行或显式建立新尝试",
+          );
         return { events: replayPlan(store, request.params.id, now()) };
       }),
   );
@@ -751,8 +842,8 @@ export async function createApp(
     "/api/events/stream",
     async (request, reply) => {
       const header = request.headers["last-event-id"];
-      let lastId = typeof header === "string" ? header : request.query.after;
-      const initial = store.events(lastId);
+      let lastCursor =
+        typeof header === "string" ? header : request.query.after;
       reply.hijack();
       reply.raw.writeHead(200, {
         "Content-Type": "text/event-stream",
@@ -762,44 +853,70 @@ export async function createApp(
         "X-Content-Type-Options": "nosniff",
       });
       connections.add(reply.raw);
-      reply.raw.write(": connected\n\n");
-      for (const event of initial) {
-        reply.raw.write(`id: ${event.id}\ndata: ${JSON.stringify(event)}\n\n`);
-        lastId = event.id;
-      }
+      const writer = new BoundedEventWriter(reply.raw);
+      let timer: NodeJS.Timeout | undefined;
+      const stopTimer = () => {
+        if (timer) {
+          clearInterval(timer);
+          streams.delete(timer);
+        }
+      };
+      const cleanup = () => {
+        stopTimer();
+        connections.delete(reply.raw);
+      };
+      reply.raw.once("close", cleanup);
+      writer.write(": connected\n\n");
       let heartbeat = 0;
-      const timer = setInterval(() => {
+      const pump = () => {
         if (!auth(request)) {
+          writer.write(
+            `event: auth-expired\ndata: ${JSON.stringify({ code: "UNAUTHENTICATED" })}\n\n`,
+          );
+          stopTimer();
           reply.raw.end();
           return;
         }
+        if (!writer.ready) return;
         try {
-          for (const event of store.events(lastId)) {
-            reply.raw.write(
-              `id: ${event.id}\ndata: ${JSON.stringify(event)}\n\n`,
+          const batch = store.eventFeed(lastCursor);
+          if (batch.events.length) {
+            if (
+              writer.write(
+                `id: ${batch.feedCursor}\nevent: events\ndata: ${JSON.stringify(batch)}\n\n`,
+              )
+            )
+              lastCursor = batch.feedCursor;
+          } else if (++heartbeat % 15 === 0) writer.write(": heartbeat\n\n");
+        } catch (error) {
+          if (error instanceof EventCursorError)
+            writer.write(
+              `event: reset\ndata: ${JSON.stringify({ code: error.code, reason: error.message, feedEpoch: store.setting("event_feed_epoch") })}\n\n`,
             );
-            lastId = event.id;
-          }
-          if (++heartbeat % 15 === 0) reply.raw.write(": heartbeat\n\n");
-          if (reply.raw.writableLength > 1_000_000) reply.raw.end();
-        } catch {
+          stopTimer();
           reply.raw.end();
         }
-      }, 1000);
-      timer.unref();
-      streams.add(timer);
-      reply.raw.on("close", () => {
-        clearInterval(timer);
-        streams.delete(timer);
-        connections.delete(reply.raw);
-      });
+      };
+      pump();
+      if (!reply.raw.writableEnded && !reply.raw.destroyed) {
+        timer = setInterval(pump, 1000);
+        timer.unref();
+        streams.add(timer);
+      }
     },
   );
   app.addHook("preClose", async () => {
+    runtime.close();
     for (const stream of streams) clearInterval(stream);
-    for (const response of connections) response.end();
+    for (const response of connections) response.destroy();
+    app.server.closeIdleConnections();
+    streams.clear();
+    connections.clear();
   });
-  app.addHook("onClose", async () => store.close());
+  app.addHook("onClose", async () => {
+    runtime.close();
+    store.close();
+  });
   return app;
 }
 
