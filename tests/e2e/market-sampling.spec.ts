@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 test("period evidence remains distinct across refresh and mobile layout", async ({
   page,
+  browser,
 }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -41,9 +42,51 @@ test("period evidence remains distinct across refresh and mobile layout", async 
     "1D",
   ]);
   expect(JSON.stringify(status)).not.toContain("private-provider-error");
-  await panel.screenshot({
-    path: test.info().outputPath("minute-sampling-desktop.png"),
+  // A screenshot of the entire tall panel escapes the drawer's scroll clip.
+  // Capture each complete card only after it is visible inside that clip.
+  const captureCards = async (viewport: string) => {
+    for (const [name, card] of [
+      ["daily", daily],
+      ["one", one],
+      ["five", five],
+    ] as const) {
+      await card.scrollIntoViewIfNeeded();
+      const geometry = await card.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        const clip = element.closest(".drawer-body")!.getBoundingClientRect();
+        return {
+          inside:
+            rect.top >= clip.top &&
+            rect.bottom <= clip.bottom &&
+            rect.left >= clip.left &&
+            rect.right <= clip.right,
+          fits: element.scrollWidth <= element.clientWidth,
+        };
+      });
+      expect(geometry).toEqual({ inside: true, fits: true });
+      await card.screenshot({
+        path: test.info().outputPath(`minute-sampling-${viewport}-${name}.png`),
+      });
+    }
+  };
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("DOM.enable");
+  await cdp.send("CSS.enable");
+  const { root } = await cdp.send("DOM.getDocument");
+  const { nodeId } = await cdp.send("DOM.querySelector", {
+    nodeId: root.nodeId,
+    selector: ".sampling-stream strong",
   });
+  const fonts = await cdp.send("CSS.getPlatformFontsForNode", { nodeId });
+  expect(fonts.fonts.some((font) => font.glyphCount > 0)).toBe(true);
+  console.log(
+    "MINUTE_SAMPLING_BROWSER",
+    browser.version(),
+    "RENDERED_FONTS",
+    JSON.stringify(fonts.fonts),
+  );
+  await cdp.detach();
+  await captureCards("desktop");
   await page.route(
     "**/api/market/status",
     (route) =>
@@ -67,8 +110,6 @@ test("period evidence remains distinct across refresh and mobile layout", async 
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
-  await panel.screenshot({
-    path: test.info().outputPath("minute-sampling-mobile.png"),
-  });
+  await captureCards("mobile");
   expect(errors).toEqual([]);
 });
