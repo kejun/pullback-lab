@@ -90,7 +90,7 @@ describe("verified online backup", () => {
       .run();
     try {
       expect(await backupDatabase(source, target)).toEqual({
-        schemaVersion: 9,
+        schemaVersion: 10,
       });
     } finally {
       writer.exec("ROLLBACK");
@@ -149,7 +149,7 @@ describe("verified online backup", () => {
     expect(
       results.find((result) => result.status === "rejected"),
     ).toMatchObject({ reason: { code: "BACKUP_TARGET_EXISTS" } });
-    expect(schema(open(target))).toEqual({ version: 9 });
+    expect(schema(open(target))).toEqual({ version: 10 });
     noPartials(dir);
   });
 
@@ -263,7 +263,7 @@ describe("offline new-path restore", () => {
       rows: store.db.prepare(`SELECT * FROM ${table}`).all(),
     }));
     await expect(restoreDatabase(source, target)).resolves.toEqual({
-      schemaVersion: 9,
+      schemaVersion: 10,
     });
     const restored = current(target);
     expect(count(restored.db, "sessions")).toBe(0);
@@ -328,12 +328,12 @@ describe("offline new-path restore", () => {
     legacy.close();
     const original = readFileSync(source);
     await expect(restoreDatabase(source, target)).resolves.toEqual({
-      schemaVersion: 9,
+      schemaVersion: 10,
     });
     expect(readFileSync(source)).toEqual(original);
     expect(schema(open(source))).toEqual({ version: 1 });
     const restored = open(target);
-    expect(schema(restored)).toEqual({ version: 9 });
+    expect(schema(restored)).toEqual({ version: 10 });
     expect(restored.prepare("SELECT json FROM plan_versions").get()).toEqual({
       json: '{"kept":"exact"}',
     });
@@ -479,7 +479,7 @@ describe("period watermark migration", () => {
     const backup = await backupBeforeMigration(path, join(dir, "backups"));
     expect(backup?.schemaVersion).toBe(7);
     const store = current(path);
-    expect(schema(store.db)).toEqual({ version: 9 });
+    expect(schema(store.db)).toEqual({ version: 10 });
     const row = store.db
       .prepare("SELECT * FROM market_worker_watermarks")
       .get() as { instrument_id: string; period: string; json: string };
@@ -517,7 +517,7 @@ describe("provider receipt query migration", () => {
         .all(),
     ).toEqual(original);
     const store = current(path);
-    expect(schema(store.db)).toEqual({ version: 9 });
+    expect(schema(store.db)).toEqual({ version: 10 });
     expect(
       store.db
         .prepare("SELECT * FROM market_provider_receipts ORDER BY sequence")
@@ -571,5 +571,112 @@ describe("provider receipt query migration", () => {
         )
         .get(),
     ).toBeUndefined();
+  });
+});
+
+describe("manual research history migration", () => {
+  it("backs up v9 before adding immutable history storage without changing existing data", async () => {
+    const dir = directory(),
+      path = join(dir, "v9.sqlite");
+    const db = old(path, 9);
+    db.prepare("INSERT INTO settings VALUES(?,?)").run(
+      "private-marker",
+      "preserved-v9",
+    );
+    db.close();
+    const backup = await backupBeforeMigration(path, join(dir, "backups"));
+    expect(backup?.schemaVersion).toBe(9);
+    const saved = open(backup!.path);
+    expect(schema(saved)).toEqual({ version: 9 });
+    expect(
+      saved
+        .prepare("SELECT value FROM settings WHERE key='private-marker'")
+        .get(),
+    ).toEqual({ value: "preserved-v9" });
+    expect(
+      saved
+        .prepare("SELECT name FROM sqlite_master WHERE name='research_history'")
+        .get(),
+    ).toBeUndefined();
+    const store = current(path);
+    expect(schema(store.db)).toEqual({ version: 10 });
+    expect(store.setting("private-marker")).toBe("preserved-v9");
+    expect(
+      store.db.prepare("SELECT count(*) n FROM research_history").get(),
+    ).toEqual({ n: 0 });
+    expect(store.db.pragma("foreign_key_check")).toEqual([]);
+  });
+  it("rolls back history table and triggers if recording schema 10 fails", () => {
+    const db = old(join(directory(), "failed-v10.sqlite"), 9);
+    db.exec(
+      "CREATE TRIGGER fail_v10 BEFORE INSERT ON schema_migrations WHEN NEW.version=10 BEGIN SELECT RAISE(ABORT,'synthetic migration failure'); END",
+    );
+    expect(() => runMigrations(db)).toThrow("synthetic migration failure");
+    expect(schema(db)).toEqual({ version: 9 });
+    expect(
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE name LIKE 'research_history%'",
+        )
+        .all(),
+    ).toEqual([]);
+  });
+  it("preserves immutable imported history through online backup and a new-file restore", async () => {
+    const { researchHistoryFixture } =
+      await import("../../../packages/market-data/research-history-fixture.js");
+    const {
+      previewResearchHistory,
+      importResearchHistory,
+      readResearchHistory,
+    } = await import("../research-history.js");
+    const dir = directory(),
+      path = join(dir, "history.sqlite"),
+      backup = join(dir, "history-backup.sqlite"),
+      target = join(dir, "history-restored.sqlite");
+    const store = current(path),
+      manifest = researchHistoryFixture(),
+      now = Date.parse("2026-10-12");
+    const instrument = {
+      id: manifest.instrumentId,
+      symbol: "HISTORY.US",
+      name: "synthetic offline fixture",
+      market: "US" as const,
+      currency: "USD" as const,
+      tick: "0.01",
+      qMin: 1,
+      qStep: 1,
+      sellSameDay: true,
+      rulesVerified: false,
+    };
+    store.putInstrument({
+      instrument,
+      manual: true,
+      note: "synthetic",
+      tags: [],
+    });
+    const preview = previewResearchHistory(store, instrument, manifest, now);
+    const imported = importResearchHistory(
+      store,
+      instrument,
+      {
+        manifest,
+        token: preview.token,
+        expectedHistoryId: preview.expectedHistoryId,
+        expectedActionVersion: preview.expectedActionVersion,
+        confirmed: true,
+      },
+      now,
+    );
+    const before = readResearchHistory(store.db, instrument.id);
+    await backupDatabase(path, backup);
+    await restoreDatabase(backup, target);
+    const restored = current(target);
+    expect(
+      readResearchHistory(restored.db, instrument.id, imported.history.id),
+    ).toEqual(before);
+    expect(restored.db.pragma("foreign_key_check")).toEqual([]);
+    expect(() => restored.db.exec("DELETE FROM research_history")).toThrow(
+      "IMMUTABLE_RESEARCH_HISTORY",
+    );
   });
 });

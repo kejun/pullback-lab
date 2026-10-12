@@ -1,3 +1,4 @@
+import { RESEARCH_HISTORY_SCHEMA_SQL } from "./research-history-schema.js";
 import { migrateMarketStreams } from "./market-stream-schema.js";
 import { migrateProviderReceipts } from "./provider-receipt-schema.js";
 import type Database from "better-sqlite3";
@@ -93,6 +94,7 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   },
   { version: 8, apply: migrateMarketStreams },
   { version: 9, apply: migrateProviderReceipts },
+  { version: 10, apply: (db) => db.exec(RESEARCH_HISTORY_SCHEMA_SQL) },
 ];
 
 /** All pending DDL and version records commit together, or all roll back. */

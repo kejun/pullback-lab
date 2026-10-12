@@ -1,3 +1,9 @@
+import {
+  registerResearchHistoryRoutes,
+  readResearchHistory,
+  historyChart,
+  assertCurrentResearchHistory,
+} from "./research-history.js";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import cookie from "@fastify/cookie";
 import {
@@ -85,6 +91,10 @@ const supportSelectionsSchema = z
   )
   .max(20);
 const supportPreviewSchema = z.object({
+  researchHistoryId: z
+    .string()
+    .regex(/^history-v1:[a-f0-9]{64}$/)
+    .optional(),
   instrumentId: z.string().min(1).max(100),
   anchorTime: integer.nullable(),
   primarySupport: positive,
@@ -95,6 +105,10 @@ const supportPreviewSchema = z.object({
     .optional(),
 });
 const planSchema = z.object({
+  researchHistoryId: z
+    .string()
+    .regex(/^history-v1:[a-f0-9]{64}$/)
+    .optional(),
   instrumentId: z.string().min(1).max(100),
   anchorTime: integer.nullable(),
   primarySupport: positive,
@@ -194,11 +208,7 @@ export async function createApp(
     const isWrite = !["GET", "HEAD", "OPTIONS"].includes(request.method);
     if (isWrite && request.headers["x-requested-with"] !== "PullbackLab")
       throw new ApiError(403, "CSRF_REJECTED", "写请求缺少应用来源标记");
-    if (
-      ["/api/session", "/api/login", "/api/health"].includes(
-        routeUrl ?? "",
-      )
-    )
+    if (["/api/session", "/api/login", "/api/health"].includes(routeUrl ?? ""))
       return;
     if (!configured)
       throw new ApiError(
@@ -220,6 +230,11 @@ export async function createApp(
       return reply
         .status(error.statusCode)
         .send({ error: error.message, code: error.code });
+    if ((error as { code?: string }).code === "FST_ERR_CTP_BODY_TOO_LARGE")
+      return reply.status(413).send({
+        error: "请求内容过大，请按页面标注的文件大小上限重新准备资料",
+        code: "REQUEST_BODY_TOO_LARGE",
+      });
     if ((error as { code?: string }).code === "SQLITE_BUSY")
       return reply.status(503).send({
         error: "数据库暂忙，尚未确认保存，请重试",
@@ -452,14 +467,39 @@ export async function createApp(
     });
     return { ok: true, synthetic: true };
   });
+  registerResearchHistoryRoutes(app, store, now);
   app.get<{
     Params: { id: string };
-    Querystring: { period?: string; anchorTime?: string };
+    Querystring: { period?: string; anchorTime?: string; historyId?: string };
   }>("/api/instruments/:id/bars", async (request) => {
     store.instrument(request.params.id);
     const period = z
       .enum(["1D", "1m", "5m"])
       .parse(request.query.period ?? "1D");
+    const historyId =
+      request.query.historyId === undefined
+        ? undefined
+        : z
+            .string()
+            .regex(/^history-v1:[a-f0-9]{64}$/)
+            .parse(request.query.historyId);
+    const storedHistory = readResearchHistory(
+      store.db,
+      request.params.id,
+      historyId,
+    );
+    if (storedHistory) {
+      const anchorTime =
+        request.query.anchorTime === undefined
+          ? store.plans().find((p) => p.instrumentId === request.params.id)
+              ?.anchorTime
+          : z.coerce
+              .number()
+              .int()
+              .nonnegative()
+              .parse(request.query.anchorTime);
+      return historyChart(storedHistory, period, anchorTime);
+    }
     const bars = store.bars(request.params.id, period);
     const daily = period === "1D" ? bars : store.bars(request.params.id, "1D");
     const latest = store
@@ -511,6 +551,7 @@ export async function createApp(
   function validatePlan(body: unknown): PlanInput {
     const p = planSchema.parse(body);
     const instrument = store.instrument(p.instrumentId).instrument;
+    assertCurrentResearchHistory(store.db, p.instrumentId, p.researchHistoryId);
     if (
       !new Decimal(p.stop).lt(p.lower) ||
       new Decimal(p.lower).gte(p.upper) ||
@@ -544,7 +585,7 @@ export async function createApp(
     if (
       p.anchorTime !== null &&
       !store
-        .bars(p.instrumentId, "1D")
+        .bars(p.instrumentId, "1D", p.researchHistoryId)
         .some((b) => b.time === p.anchorTime && b.final)
     )
       throw new ApiError(400, "INVALID_ANCHOR", "锚点须选自已完成日线");
