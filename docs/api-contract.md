@@ -13,9 +13,9 @@
 - POST /api/settings/screening {confirmed:true,expectedVersion,parameters:{minimumAdv20:{US,CN},adrMinPct,adrMaxPct,limitPerMarket}} → ScreeningSettings；追加不可变规则版本，旧 expectedVersion 返回 409。兼容旧 {confirmed:true}，只首次确认默认值，重试不覆盖最新参数
 - POST /api/demo/seed 显式载入合成数据（只在 demo 启动配置允许时）
 - GET /api/instruments/:id/bars?period=1D|1m|5m → {bars:Bar[],ema9:(string|null)[],ema21:(string|null)[],ema50:(string|null)[],avwap:(string|null)[],synthetic:boolean}
-- POST /api/plans PlanInput → Plan；POST /api/plans/:id/versions {...PlanInput,expectedVersion} → Plan
+- POST /api/plans PlanInput → Plan；POST /api/plans/:id/versions {...PlanInput,expectedVersion,expectedAttemptId} → Plan
 - POST /api/plans/support-preview {instrumentId,anchorTime,primarySupport,supportSelections,sessionDate?} → SupportSnapshot；只接受支撑选择，EMA/ATR/AVWAP 价格与 ready 状态均由服务端核算
-- POST /api/plans/:id/risk → RiskResult；POST /api/plans/:id/activate {expectedVersion} → {plan:Plan,risk:RiskResult}；POST /api/plans/:id/pause {expectedVersion} → Plan
+- POST /api/plans/:id/risk → RiskResult；POST /api/plans/:id/activate {expectedVersion,expectedAttemptId} → {plan:Plan,risk:RiskResult}；POST /api/plans/:id/pause {expectedVersion,expectedAttemptId} → Plan
 - POST /api/funds {...Funds,expectedGeneration:number} → Funds（新建 expectedGeneration=0）
 - POST /api/instruments/:id/price-proposal {kind:'POINT',displayPrice:string} 或 {kind:'STEP',price:string,steps:integer} → {price,tick,instrumentRevision,rounded,basis}；按服务端证券 tick 规范化，仅返回草稿提议，不写计划
 - GET /api/events?limit=50&before=cursor 或 &after=cursor → EventPage；最多 50 条 DecisionEventSummary，含 counts、beforeCursor、afterCursor、feedCursor、feedEpoch、feedRevision
@@ -31,7 +31,14 @@
 - GET /api/demo/plans/:id/runtime → {runtime:RuntimeProgress|null}（仅演示模式）
 - POST /api/demo/plans/:id/runtime/start {expectedVersion,expectedAttemptId} → {runtime:RuntimeProgress}；只准备服务端合成序列
 - POST /api/demo/plans/:id/runtime/step {expectedVersion,expectedAttemptId,expectedStep,count?:1..20} → {runtime:RuntimeProgress}；逐输入原子提交，进度冲突返回 409；不接受客户端行情或门控结论
-- POST /api/demo/plans/:id/replay（仅演示模式）→ {events:DecisionEvent[]} 产生明确标记的合成回放结果，不伪装实时信号
+- POST /api/demo/plans/:id/runtime/recover {expectedVersion,expectedAttemptId,sourceAttemptId,expectedStep} → {runtime:RuntimeProgress}；同事务创建恢复后新尝试和预留，从显式旧来源水位后继续；当前计划修订后 expectedAttemptId 可为 null，sourceAttemptId 仍须明确引用最新同会话旧尝试
+- POST /api/demo/plans/:id/replay {expectedVersion,expectedAttemptId}（仅演示模式）→ {events:DecisionEvent[]} 产生明确标记的合成回放结果，不伪装实时信号
+
+计划版本、启用、暂停和快速回放请求必须同时携带 expectedVersion 与 expectedAttemptId；尚无尝试时明确传 null，不能省略。版本相同但尝试已改变也返回 409 ATTEMPT_CONFLICT。校验与写入共用事务；已成功的相同幂等命令只读回原结果，不再操作新尝试。
+
+恢复是显式新尝试，RuntimeProgress 包含 template、activatedAt 和 recoveredFromAttemptId。旧尝试须未消费且有持久水位；恢复不能重放旧输入、复用旧参考或继承原 aboveEvidence。必须先观察完整新 K 线收盘严格高于 U，再等新的回踩。超过首小时、来源变化、步数变化或无完整后续输入均拒绝。保存新版本后仍可引用同证券同会话的旧水位，旧版本与输入归档不改；GET runtime 可返回该来源。普通 activate 不能将同计划同会话重新标为 SESSION_FIRST。
+
+TAKEN_PENDING 仅在用户确认已反映实际交易的新资金快照时吸收，编辑、暂停与过期均不能释放。TAKEN/SKIPPED 终态不接受暂停。资金重建先保留待反馈入场占用，再按原 allocationOrder 为其他计划缩量或暂停；恢复不得提高原批准数量。
 
 所有写请求携带 X-Requested-With: PullbackLab。命令可携带 Idempotency-Key；生产通过 Cookie 会话认证。前端遇到409保留表单输入并要求重新读取。
 

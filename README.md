@@ -40,13 +40,15 @@ npm run test:e2e
 | `apps/web`             | React 三页工作台、Lightweight Charts 图表、SSE 提醒                  |
 | `tests/e2e`            | 浏览器中的研究、回放和反馈闭环                                       |
 
-SQLite 使用 WAL、`synchronous=FULL`、`BEGIN IMMEDIATE` 和事件唯一约束。事件保存冻结输入与哈希；前端重连可重复投递，按事件 ID 合并。资金变更和计划修改使用 generation/version 校验，旧表单返回 409。
+SQLite 使用 WAL、`synchronous=FULL`、`BEGIN IMMEDIATE` 和事件唯一约束。事件保存冻结输入与哈希；前端重连可重复投递，按事件 ID 合并。资金变更使用 generation 校验，计划操作同时校验 version 与 attemptId；旧表单或旧标签页返回 409 并保留输入。
 
 服务启动会校验 SQLite 实际版本、取得单实例锁并事务迁移数据库。支撑家族、容差和输入版本由服务端冻结；提醒页可只读重放原始判断、查看实际交易偏离及反馈修订历史。日线采样默认关闭，显式启用配置和隔离范围见操作说明。
 
 候选页支持单个或 CSV 批量加入人工观察列表，原子校验最多 100 只研究标的；标签和笔记用版本校验防止并发覆盖。设置页可确认并保存 ADV、ADR 和每市场排名上限的新规则版本，旧计划与回放保留原依据。人工身份与筛选结论分开展示；数据截止、缺失原因、成交额来源和供应商配额未知状态均可查看。
 
 设置页可读取并下载脱敏运行报告。生产启动先检查密码、HTTPS 来源及前端构建，旧数据库迁移前自动备份；`npm run backup` 生成一致快照，`npm run restore -- BACKUP_PATH NEW_DATABASE_PATH` 恢复到新文件并失效旧会话、资金确认与旧命令。单主机 Compose 与 Caddy 配置见部署说明。
+
+暂停或重启后的分步演练可显式选择「新建恢复尝试」，从已保存进度之后继续。恢复使用新身份，需重新高于支撑区上沿后再回踩；保存新计划版本也不会重新冒充会话首次。已消费尝试不通过恢复重复入场。已交易待核对占用不会被编辑或暂停释放，须在资金面板确认已反映实际交易的新快照。
 
 ## 行情探针
 
@@ -69,6 +71,7 @@ npm run probe -- --symbols AAPL.US --observe-seconds 30
 - [第三批实现与验证](docs/acceptance-v3.md)
 - [第四批实现与验证](docs/acceptance-v4.md)
 - [第五批实现与验证](docs/acceptance-v5.md)
+- [第六批实现与验证](docs/acceptance-v6.md)
 - [单主机私有部署](docs/deployment.md)
 - [私有部署与备份恢复](docs/operations.md)
 
