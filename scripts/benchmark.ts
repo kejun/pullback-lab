@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, statfsSync } from "node:fs";
 import { availableParallelism, cpus, platform, release, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -179,14 +180,19 @@ try {
     });
     for (const bucket of [candidatesCold, candidatesWarm]) {
       const started = performance.now();
-      const result = await request<{ candidates: unknown[]; coverage: number }>(
-        "GET",
-        "/api/candidates",
-      );
+      const result = await request<{
+        candidates: unknown[];
+        coverage: number;
+        cacheHit: boolean;
+      }>("GET", "/api/candidates");
       bucket.push(performance.now() - started);
       if (result.candidates.length !== poolSize || result.coverage !== poolSize)
         throw new Error(
           `Candidate fixture incomplete: ${result.candidates.length}/${result.coverage}`,
+        );
+      if (result.cacheHit !== (bucket === candidatesWarm))
+        throw new Error(
+          "Candidate cache did not match the cold/warm measurement boundary",
         );
     }
     for (let index = 0; index < plans.length; index++) {
@@ -276,9 +282,19 @@ try {
     }
   ).version;
   report = {
-    benchmarkVersion: "pullback-synthetic-v2",
+    benchmarkVersion: "pullback-synthetic-v4",
     generatedAt: new Date().toISOString(),
     syntheticOnly: true,
+    source: {
+      commit: execFileSync("git", ["rev-parse", "HEAD"], {
+        encoding: "utf8",
+      }).trim(),
+      trackedChanges: execFileSync(
+        "git",
+        ["status", "--porcelain", "--untracked-files=no"],
+        { encoding: "utf8" },
+      ).trim(),
+    },
     environment: {
       node: process.version,
       sqlite,
@@ -313,7 +329,7 @@ try {
       candidatesCold:
         "first request after instrument metadata mutation, same process; not OS/process cold",
       candidatesWarm:
-        "immediate second request with unchanged database; does not assume an application result cache",
+        "immediate second request with unchanged database; assert cacheHit=true; cold requests assert cacheHit=false",
       replay:
         "replayPlan from persisted verified synthetic bars through file-backed SQLite WAL/FULL transaction completion, including SQLite synchronization calls",
       audit:
@@ -321,7 +337,14 @@ try {
       setupExcluded:
         "login, fixture insertion, support-plan creation/versioning, risk activation, feedback and release",
     },
-    candidates: { cold, warm },
+    candidates: {
+      cold,
+      warm,
+      successfulRequests: candidatesCold.length + candidatesWarm.length,
+      failedRequests: 0,
+      failurePolicy:
+        "Any failed request or incomplete result aborts the run; this report is emitted only after all samples pass.",
+    },
     historicalReplay: { perPlan: replay, tenPlans: batch },
     readonlyAudit: {
       perPlan: summarize(auditPerPlan),

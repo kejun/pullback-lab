@@ -105,6 +105,155 @@ small {
   font-size: 11px;
   color: var(--muted);
 }
+.quota-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  color: var(--muted);
+  font-size: 12px;
+  margin: -4px 0 22px;
+}
+.quota-note strong {
+  color: var(--amber);
+}
+.sampling-status {
+  display: flex;
+  gap: 5px 12px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 11px;
+  margin: -8px 0 22px;
+}
+.sampling-status strong {
+  font-weight: 500;
+}
+.plan-rule-version {
+  margin: 0 0 18px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.universe-import {
+  padding: 22px;
+  margin-bottom: 22px;
+}
+.universe-import > .settings-intro {
+  margin: 12px 0 18px;
+}
+.universe-import .field {
+  margin-bottom: 14px;
+}
+.import-capacity {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  justify-content: center;
+}
+.import-preview {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 16px 0;
+}
+.import-preview > p {
+  padding: 12px;
+  background: var(--soft);
+  font-size: 12px;
+}
+.import-preview .table-wrap {
+  max-height: 300px;
+  overflow: auto;
+}
+.import-preview table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.import-preview th,
+.import-preview td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.import-result {
+  margin: 16px 0;
+  font-size: 12px;
+}
+.import-result ul {
+  max-height: 200px;
+  overflow: auto;
+  line-height: 1.9;
+}
+.universe-import .callout,
+.observation-form .callout,
+.screening-editor .callout {
+  margin: 12px 0;
+}
+.candidate-refresh-state {
+  padding: 13px 22px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+.candidate-refresh-state.failed {
+  color: var(--red);
+  background: #fcf5ef;
+}
+.manual-identity {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.candidate-health-cell {
+  max-width: 195px;
+  min-width: 155px;
+}
+.candidate-health-cell > strong {
+  font-size: 11px;
+  font-weight: 500;
+}
+.candidate-health-cell > small {
+  display: block;
+  margin-top: 5px;
+}
+.candidate-panel .panel-foot small {
+  display: block;
+  margin-top: 5px;
+}
+.screening-editor .source-note {
+  margin: 16px 0;
+}
+.screening-editor .check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 20px 0 14px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.screening-editor .check-row input {
+  margin-top: 4px;
+  flex: 0 0 auto;
+}
+@media (max-width: 600px) {
+  .universe-import {
+    padding: 16px;
+  }
+  .universe-import .callout,
+  .observation-form .callout,
+  .screening-editor .callout {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .import-preview table {
+    min-width: 450px;
+  }
+  .candidate-refresh-state {
+    padding: 12px 16px;
+    line-height: 1.6;
+  }
+}
 .app-shell {
   display: flex;
   min-height: 100vh;

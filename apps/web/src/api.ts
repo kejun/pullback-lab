@@ -3,6 +3,7 @@ export class ApiError extends Error {
     message: string,
     public status: number,
     public code: string,
+    public details?: Record<string, unknown>,
   ) {
     super(message);
   }
@@ -33,6 +34,7 @@ export async function api<T>(
       data.error || "请求未完成",
       response.status,
       data.code || "REQUEST_FAILED",
+      data,
     );
   return data as T;
 }
