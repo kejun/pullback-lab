@@ -30,6 +30,7 @@ import {
 import { registerPriceProposalRoutes } from "./price-proposal.js";
 import { registerOperationsRoutes } from "./operations-status.js";
 import { registerActionEvidenceRoutes } from "./action-evidence-query.js";
+import { registerProviderReceiptRoutes } from "./provider-receipt-query.js";
 import { auditDecisionInput } from "./audit-replay.js";
 import {
   BoundedEventWriter,
@@ -233,6 +234,7 @@ export async function createApp(
   });
   registerPriceProposalRoutes(app, store);
   registerActionEvidenceRoutes(app, store);
+  registerProviderReceiptRoutes(app, store);
   registerOperationsRoutes(app, store, {
     now,
     secureCookies: options.secureCookies,

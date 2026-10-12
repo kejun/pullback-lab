@@ -196,6 +196,7 @@ describe("server-owned daily evidence worker", () => {
       status: "QUARANTINED",
       reason: "FINALITY_UNVERIFIED",
       normalized_sequence: null,
+      requested_period: "1D",
     });
     expect(JSON.parse(String(receipts[0].payload_json))).toEqual(sample());
     expect(receipts[1].received_at).toBe(now());
@@ -811,6 +812,16 @@ describe("explicit minute history sampling", () => {
       "SAMPLE_IDENTITY_OR_TIME_INVALID",
     );
     expect(ctx.worker.status().lastSuccessAt).not.toBeNull();
+    expect(
+      ctx.db
+        .prepare(
+          "SELECT requested_period, json_extract(payload_json,'$.period') AS returned_period FROM market_provider_receipts ORDER BY sequence",
+        )
+        .all(),
+    ).toEqual([
+      { requested_period: "1m", returned_period: "1D" },
+      { requested_period: "5m", returned_period: "1D" },
+    ]);
   });
   it("preserves earlier period evidence on failure and retains a separate failure outcome after restart", async () => {
     const ctx = minuteSetup({}, async (symbol, period) => {

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { parseMinuteSymbols } from "../../packages/market-data/sampling-config.js";
 import { MARKET_STREAM_SCHEMA_SQL } from "./market-stream-schema.js";
+import { migrateProviderReceipts } from "./provider-receipt-schema.js";
 import type Database from "better-sqlite3";
 import type { Instrument } from "../../packages/contracts/index.js";
 import type {
@@ -213,9 +214,10 @@ export class MarketWorker {
     this.spacing = bounded(options.requestSpacingMs, 1000, 1000, 60_000);
     this.shutdownTimeout = bounded(options.shutdownTimeoutMs, 2000, 1, 5000);
     this.requestTimeout = bounded(options.requestTimeoutMs, 20_000, 1, 60_000);
-    // Create current tables first for isolated worker use; service upgrades run migration 8 before construction.
+    // Isolated workers create current tables; service upgrades run migrations first.
     options.db.exec(MARKET_STREAM_SCHEMA_SQL);
     options.db.exec(MARKET_WORKER_SCHEMA_SQL);
+    migrateProviderReceipts(options.db);
     this.repository = new BarRepository(options.db);
     const row = options.db
       .prepare("SELECT json FROM market_worker_state WHERE id=1")
@@ -764,7 +766,7 @@ export class MarketWorker {
           }
           const inserted = this.options.db
             .prepare(
-              `INSERT INTO market_provider_receipts(epoch,instrument_id,source,received_at,observed_at,provider_timestamp,historical,payload_hash,payload_json,status,reason,evidence_id,normalized_sequence) VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?)`,
+              `INSERT INTO market_provider_receipts(epoch,instrument_id,source,received_at,observed_at,provider_timestamp,historical,payload_hash,payload_json,status,reason,evidence_id,normalized_sequence,requested_period) VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?,?)`,
             )
             .run(
               this.current.connectionEpoch,
@@ -779,6 +781,7 @@ export class MarketWorker {
               reason,
               evidence?.evidenceId ?? null,
               normalizedSequence,
+              period,
             );
           if (invalidation)
             this.options.onInvalidation?.({

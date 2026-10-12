@@ -1,4 +1,5 @@
 import { migrateMarketStreams } from "./market-stream-schema.js";
+import { migrateProviderReceipts } from "./provider-receipt-schema.js";
 import type Database from "better-sqlite3";
 import { MARKET_WORKER_SCHEMA_SQL } from "./market-worker.js";
 import { BAR_REPOSITORY_SCHEMA_SQL } from "../../packages/market-data/ingestion.js";
@@ -91,6 +92,7 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
       ),
   },
   { version: 8, apply: migrateMarketStreams },
+  { version: 9, apply: migrateProviderReceipts },
 ];
 
 /** All pending DDL and version records commit together, or all roll back. */
