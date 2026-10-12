@@ -203,12 +203,40 @@ export interface DecisionEvent {
   feedback: "TAKEN" | "SKIPPED" | null;
   snapshot: Record<string, unknown>;
 }
+/** Bounded event list item. Frozen evidence is available only through event detail. */
+export interface DecisionEventSummary extends Omit<DecisionEvent, "snapshot"> {
+  seq: number;
+  changeSeq: number;
+  synthetic: boolean;
+  recordable: boolean;
+  feedbackRevisionId: string | null;
+}
+export interface EventCounts {
+  total: number;
+  unread: number;
+  pending: number;
+  taken: number;
+  skipped: number;
+}
+export interface EventFeedBatch {
+  events: DecisionEventSummary[];
+  feedCursor: string;
+  feedEpoch: string;
+  feedRevision: number;
+  hasMore: boolean;
+  counts: EventCounts;
+}
+export interface EventPage extends EventFeedBatch {
+  beforeCursor: string | null;
+  afterCursor: string | null;
+}
 export interface Bootstrap {
   demo: boolean;
   capabilities: Capability[];
   instruments: Instrument[];
   plans: Plan[];
   funds: Funds | null;
-  events: DecisionEvent[];
+  events: DecisionEventSummary[];
+  eventPage: EventPage;
   screeningConfirmed: boolean;
 }

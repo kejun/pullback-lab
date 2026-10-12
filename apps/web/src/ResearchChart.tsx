@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -15,6 +22,14 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import type { Bar, PlanInput } from "../../../packages/contracts/index";
+import {
+  chartSafePrice,
+  dragCoordinate,
+  planPriceFields,
+  pointPriceProposal,
+  type ChartPriceProposal,
+  type PlanPriceField,
+} from "./chart-price";
 
 export interface ResearchChartProps {
   bars: Bar[];
@@ -26,7 +41,11 @@ export interface ResearchChartProps {
   plan: PlanInput;
   /** UTC seconds, matching Bar.time and the server's anchorTime contract. */
   onAnchor: (time: number) => void;
-  onPrice?: (price: string) => void;
+  instrumentTick?: string;
+  onPriceProposal?: (
+    field: PlanPriceField,
+    proposal: ChartPriceProposal,
+  ) => Promise<void>;
 }
 
 const colors = {
@@ -64,8 +83,11 @@ export function ResearchChart({
   period,
   plan,
   onAnchor,
+  instrumentTick = "",
+  onPriceProposal,
 }: ResearchChartProps) {
   const container = useRef<HTMLDivElement>(null);
+  const adjustmentHelpId = useId();
   const chartRef = useRef<{
     chart: IChartApi;
     candles: ISeriesApi<"Candlestick">;
@@ -74,9 +96,231 @@ export function ResearchChart({
     priceLines: IPriceLine[];
     fitKey: string;
   } | null>(null);
-  const latest = useRef({ bars, period, onAnchor });
-  latest.current = { bars, period, onAnchor };
   const [hovered, setHovered] = useState<Bar | null>(null);
+  const [adjusting, setAdjusting] = useState(false);
+  const [selectedField, setSelectedField] =
+    useState<PlanPriceField>("primarySupport");
+  const [preview, setPreview] = useState<string | null>(null);
+  const [handleY, setHandleY] = useState<number | null>(null);
+  const [pending, setPending] = useState(false);
+  const [adjustmentMessage, setAdjustmentMessage] = useState("");
+  const operation = useRef(0);
+  const pendingRef = useRef(false);
+  const drag = useRef<{
+    pointerId: number;
+    element: HTMLButtonElement;
+    field: PlanPriceField;
+    grabOffset: number;
+    startY: number;
+    proposal: ChartPriceProposal | null;
+    originalPrice: string;
+  } | null>(null);
+  const latest = useRef({
+    bars,
+    period,
+    onAnchor,
+    plan,
+    instrumentTick,
+    onPriceProposal,
+    adjusting,
+    selectedField,
+  });
+  latest.current = {
+    bars,
+    period,
+    onAnchor,
+    plan,
+    instrumentTick,
+    onPriceProposal,
+    adjusting,
+    selectedField,
+  };
+
+  function cancelDrag(message?: string) {
+    const active = drag.current;
+    drag.current = null;
+    if (active?.element.hasPointerCapture(active.pointerId))
+      active.element.releasePointerCapture(active.pointerId);
+    setPreview(null);
+    if (message) setAdjustmentMessage(message);
+  }
+
+  // Cancelling a gesture never mutates a plan. The parent also guards async results.
+  useEffect(() => {
+    operation.current += 1;
+    pendingRef.current = false;
+    setPending(false);
+    cancelDrag();
+    setAdjusting(false);
+    setAdjustmentMessage("");
+  }, [plan.instrumentId, period]);
+
+  useEffect(() => {
+    const cancel = () => {
+      if (drag.current) cancelDrag("已取消未提交的调价。");
+    };
+    const hidden = () => {
+      if (document.hidden) cancel();
+    };
+    window.addEventListener("blur", cancel);
+    document.addEventListener("visibilitychange", hidden);
+    return () => {
+      operation.current += 1;
+      cancelDrag();
+      window.removeEventListener("blur", cancel);
+      document.removeEventListener("visibilitychange", hidden);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (drag.current) cancelDrag("行情或价格单位已变更，已取消拖动。");
+  }, [bars, instrumentTick]);
+
+  async function submitProposal(
+    field: PlanPriceField,
+    proposal: ChartPriceProposal,
+  ) {
+    const callback = latest.current.onPriceProposal;
+    if (!callback || pendingRef.current) return;
+    const token = ++operation.current;
+    pendingRef.current = true;
+    setPending(true);
+    setAdjustmentMessage("正在按最小变价单位校验…");
+    try {
+      await callback(field, proposal);
+      if (operation.current === token)
+        setAdjustmentMessage("已更新计划草稿；保存后才会生成新版本。");
+    } catch (error) {
+      if (operation.current === token)
+        setAdjustmentMessage(
+          error instanceof Error ? error.message : "调价失败，计划价格未修改。",
+        );
+    } finally {
+      if (operation.current === token) {
+        pendingRef.current = false;
+        setPending(false);
+      }
+    }
+  }
+
+  function startDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (drag.current && drag.current.pointerId !== event.pointerId) {
+      cancelDrag("检测到多点触控，已取消拖动。");
+      return;
+    }
+    const current = latest.current;
+    const instance = chartRef.current;
+    const element = container.current;
+    if (
+      !current.adjusting ||
+      pendingRef.current ||
+      !event.isPrimary ||
+      event.button !== 0 ||
+      drag.current ||
+      !instance ||
+      !element
+    )
+      return;
+    const price = chartSafePrice(
+      current.plan[current.selectedField],
+      current.instrumentTick,
+    );
+    const coordinate =
+      price === null ? null : instance.candles.priceToCoordinate(price);
+    if (coordinate === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.focus({ preventScroll: true });
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      drag.current = {
+        pointerId: event.pointerId,
+        element: event.currentTarget,
+        field: current.selectedField,
+        grabOffset:
+          event.clientY - element.getBoundingClientRect().top - coordinate,
+        startY: event.clientY,
+        proposal: null,
+        originalPrice: current.plan[current.selectedField],
+      };
+      setAdjustmentMessage("拖动预览中；松开校验，Esc 取消。");
+    } catch {
+      cancelDrag("无法开始拖动，请使用下方加减按钮。");
+    }
+  }
+
+  function moveDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    const active = drag.current;
+    const instance = chartRef.current;
+    const element = container.current;
+    if (
+      !active ||
+      active.pointerId !== event.pointerId ||
+      !instance ||
+      !element
+    )
+      return;
+    if (latest.current.plan[active.field] !== active.originalPrice) {
+      cancelDrag("价格已在表单中变更，已取消拖动。");
+      return;
+    }
+    const bounds = element.getBoundingClientRect();
+    const y = dragCoordinate(
+      event.clientY,
+      bounds.top,
+      active.grabOffset,
+      instance.chart.panes()[0].getHeight(),
+    );
+    if (
+      y === null ||
+      event.clientX < bounds.left ||
+      event.clientX > bounds.right
+    ) {
+      cancelDrag("拖动超出图表，已取消。");
+      return;
+    }
+    if (Math.abs(event.clientY - active.startY) < 3 && active.proposal === null)
+      return;
+    const proposal = pointPriceProposal(
+      instance.candles.coordinateToPrice(y),
+      latest.current.instrumentTick,
+    );
+    if (!proposal || proposal.kind !== "POINT") {
+      cancelDrag("此价格尺度无法精确调价，请直接填写价格。");
+      return;
+    }
+    active.proposal = proposal;
+    setPreview(proposal.displayPrice);
+  }
+
+  function finishDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    const active = drag.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    // Validate the release position as well: pointer-up may arrive without a final move.
+    moveDrag(event);
+    if (drag.current !== active) return;
+    const proposal = active.proposal;
+    cancelDrag();
+    if (proposal) void submitProposal(active.field, proposal);
+    else setAdjustmentMessage("未改变价格。");
+  }
+
+  function stepPrice(steps: number) {
+    const current = latest.current;
+    if (
+      drag.current ||
+      chartSafePrice(
+        current.plan[current.selectedField],
+        current.instrumentTick,
+      ) === null
+    )
+      return;
+    void submitProposal(current.selectedField, {
+      kind: "STEP",
+      price: current.plan[current.selectedField],
+      steps,
+    });
+  }
 
   // Retain source indices so each indicator stays aligned after normalization.
   const rows = useMemo(() => {
@@ -181,7 +425,11 @@ export function ResearchChart({
       fitKey: "",
     };
     chart.subscribeClick((event) => {
-      if (latest.current.period !== "1D" || typeof event.time !== "number")
+      if (
+        latest.current.adjusting ||
+        latest.current.period !== "1D" ||
+        typeof event.time !== "number"
+      )
         return;
       const selected = latest.current.bars.find(
         (bar) => bar.time === event.time,
@@ -279,6 +527,17 @@ export function ResearchChart({
           color: colors.support,
         });
     }
+    if (adjusting) {
+      const field = planPriceFields.find(
+        (candidate) => candidate.field === selectedField,
+      )!;
+      lines.push({
+        value: preview ?? plan[selectedField],
+        title: `${field.label} · 调价`,
+        color: colors.ink,
+        main: true,
+      });
+    }
     instance.priceLines = lines.flatMap((line) => {
       const price = numberOrNull(line.value);
       if (price === null || price <= 0) return [];
@@ -301,7 +560,38 @@ export function ResearchChart({
     plan.entryMax,
     plan.stop,
     plan.supportSelections,
+    adjusting,
+    selectedField,
+    preview,
   ]);
+
+  // Lightweight Charts has no price-scale change subscription. Poll only while
+  // its one selected handle is active, updating React only when geometry changes.
+  useEffect(() => {
+    if (!adjusting) {
+      setHandleY(null);
+      return;
+    }
+    let frame = 0;
+    const position = () => {
+      const instance = chartRef.current;
+      const value = chartSafePrice(
+        preview ?? plan[selectedField],
+        instrumentTick,
+      );
+      const y =
+        value === null
+          ? null
+          : (instance?.candles.priceToCoordinate(value) ?? null);
+      const height = instance?.chart.panes()[0]?.getHeight() ?? 0;
+      const next =
+        y !== null && y >= 22 && y <= height - 22 ? Math.round(y) : null;
+      setHandleY((previous) => (previous === next ? previous : next));
+      frame = requestAnimationFrame(position);
+    };
+    frame = requestAnimationFrame(position);
+    return () => cancelAnimationFrame(frame);
+  }, [adjusting, preview, plan[selectedField], instrumentTick, selectedField]);
 
   useEffect(() => {
     const instance = chartRef.current;
@@ -336,6 +626,13 @@ export function ResearchChart({
     ["止损", colors.stop],
   ];
   const completedBars = rows.filter(({ bar }) => bar.final);
+  const selectedLabel = planPriceFields.find(
+    (field) => field.field === selectedField,
+  )!.label;
+  const priceAdjustable =
+    !!onPriceProposal &&
+    rows.length > 0 &&
+    chartSafePrice(plan[selectedField], instrumentTick) !== null;
 
   return (
     <div
@@ -409,6 +706,103 @@ export function ResearchChart({
           </div>
         )}
       </div>
+      {onPriceProposal && (
+        <section
+          aria-label="图表调价"
+          style={{
+            padding: "10px 18px",
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 10,
+            alignItems: "center",
+            fontSize: 12,
+            borderTop: "1px solid #e9eee5",
+          }}
+        >
+          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            价格线
+            <select
+              aria-label="选择调价价格线"
+              value={selectedField}
+              disabled={pending}
+              onChange={(event) => {
+                cancelDrag();
+                setSelectedField(event.target.value as PlanPriceField);
+                setAdjustmentMessage("");
+              }}
+              style={{ maxWidth: "100%", padding: 8 }}
+            >
+              {planPriceFields.map(({ field, label }) => (
+                <option key={field} value={field}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            aria-pressed={adjusting}
+            disabled={!priceAdjustable || pending}
+            onClick={() => {
+              cancelDrag();
+              setAdjusting((value) => !value);
+              setAdjustmentMessage("");
+            }}
+          >
+            {adjusting ? "结束图表调价" : "开启图表调价"}
+          </button>
+          {adjusting && (
+            <>
+              <button
+                type="button"
+                aria-label={`${selectedLabel}减少一个最小变价单位`}
+                disabled={!priceAdjustable || pending || preview !== null}
+                onClick={() => stepPrice(-1)}
+              >
+                − 1 tick
+              </button>
+              <button
+                type="button"
+                aria-label={`${selectedLabel}增加一个最小变价单位`}
+                disabled={!priceAdjustable || pending || preview !== null}
+                onClick={() => stepPrice(1)}
+              >
+                + 1 tick
+              </button>
+            </>
+          )}
+          <span
+            style={{
+              width: "100%",
+              lineHeight: 1.7,
+              overflowWrap: "anywhere",
+              color: colors.muted,
+            }}
+          >
+            {adjusting
+              ? `当前：${selectedLabel} ${preview ?? plan[selectedField]}${preview ? "（拖动预览）" : ""}。拖动图中手柄，或聚焦手柄后用方向键按 tick 调整；Esc 取消。`
+              : "选择价格线后开启调价。拖动只修改草稿，需另行保存。"}
+            {adjusting && handleY === null && priceAdjustable
+              ? "价格线在可视范围外，可用加减按钮调整。"
+              : ""}
+            {!priceAdjustable
+              ? "当前价格或行情不足以精确调价，请先在表单填写有效价格。"
+              : ""}
+          </span>
+          <span
+            role="status"
+            aria-live="polite"
+            style={{
+              minHeight: 18,
+              width: "100%",
+              overflowWrap: "anywhere",
+              color: colors.ink,
+            }}
+          >
+            {adjustmentMessage}
+          </span>
+        </section>
+      )}
       <div style={{ position: "relative" }}>
         <div
           ref={container}
@@ -416,6 +810,63 @@ export function ResearchChart({
           aria-label={`${period === "1D" ? "日线" : "分钟"}蜡烛图，包含均线、锚定均价和交易计划价格线`}
           style={{ width: "100%", minHeight: 350 }}
         />
+        {adjusting && handleY !== null && priceAdjustable && (
+          <button
+            type="button"
+            aria-label={`拖动${selectedLabel}价格线`}
+            aria-describedby={adjustmentHelpId}
+            aria-disabled={pending}
+            onPointerDown={startDrag}
+            onPointerMove={moveDrag}
+            onPointerUp={finishDrag}
+            onPointerCancel={() => cancelDrag("手势已取消，价格未修改。")}
+            onLostPointerCapture={() => {
+              if (drag.current) cancelDrag("手势已取消，价格未修改。");
+            }}
+            onBlur={() => {
+              if (drag.current) cancelDrag("已取消未提交的调价。");
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                cancelDrag("已取消未提交的调价。");
+                setAdjusting(false);
+              } else if (
+                ["ArrowUp", "ArrowRight", "ArrowDown", "ArrowLeft"].includes(
+                  event.key,
+                )
+              ) {
+                event.preventDefault();
+                if (!event.repeat)
+                  stepPrice(
+                    event.key === "ArrowUp" || event.key === "ArrowRight"
+                      ? 1
+                      : -1,
+                  );
+              }
+            }}
+            style={{
+              position: "absolute",
+              left: 12,
+              top: handleY - 22,
+              minHeight: 44,
+              minWidth: 100,
+              maxWidth: "calc(100% - 110px)",
+              padding: "6px 12px",
+              touchAction: "none",
+              cursor: preview ? "grabbing" : "ns-resize",
+              border: `2px solid ${colors.ink}`,
+              color: colors.ink,
+              background: "#fffefaef",
+              borderRadius: 8,
+              fontSize: 12,
+              zIndex: 2,
+              overflowWrap: "anywhere",
+            }}
+          >
+            ↕ {selectedLabel}
+          </button>
+        )}
         {!rows.length && (
           <div
             style={{
@@ -488,10 +939,12 @@ export function ResearchChart({
           color: colors.muted,
         }}
       >
-        <span>
-          {period === "1D"
-            ? "点击已收盘日线，设置 AVWAP 锚点。"
-            : "AVWAP 使用服务端投影；切换日线可调整锚点。"}
+        <span id={adjustmentHelpId}>
+          {adjusting
+            ? "调价模式已暂停日线锚点点击；图外区域仍可滚动页面。"
+            : period === "1D"
+              ? "点击已收盘日线，设置 AVWAP 锚点。"
+              : "AVWAP 使用服务端投影；切换日线可调整锚点。"}
         </span>
         {period === "1D" && completedBars.length > 0 && (
           <label

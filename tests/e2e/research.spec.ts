@@ -169,10 +169,8 @@ test("research workflow preserves plans, records and stale-funds protection", as
     },
   );
   expect(concurrentFeedback.status()).toBe(200);
-  await page
-    .getByRole("button", { name: "已交易", exact: true })
-    .last()
-    .click();
+  // The live summary detects the newer revision before another stale submission.
+  // The server suite separately verifies the 409 compare-and-swap backstop.
   const feedbackConflict = page.getByRole("region", {
     name: "反馈版本冲突复核",
   });
