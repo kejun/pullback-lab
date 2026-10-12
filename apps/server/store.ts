@@ -476,7 +476,11 @@ export class Store {
   }
   private release(planId: string) {
     const old = this.reservations().find((r) => r.planId === planId);
-    if (old) this.writeReservation({ ...old, state: "RELEASED" });
+    // A reported trade remains locked until a new account snapshot explicitly
+    // absorbs it. Editing, pausing or expiring a plan cannot turn spent cash
+    // back into available cash, including after a historical feedback correction.
+    if (old?.state === "ACTIVE")
+      this.writeReservation({ ...old, state: "RELEASED" });
   }
   private totals(plan: Plan) {
     const currency = this.instrument(plan.instrumentId).instrument.currency;
@@ -507,7 +511,10 @@ export class Store {
     phase: "PLAN" | "TRIGGER" = "PLAN",
   ): RiskResult {
     const funds = this.funds();
-    if (!funds)
+    const pendingTrade = this.reservations().some(
+      (r) => r.planId === plan.id && r.state === "TAKEN_PENDING",
+    );
+    if (!funds || pendingTrade)
       return {
         quantity: 0,
         entry,
@@ -515,7 +522,11 @@ export class Store {
         cashUse: "0",
         riskBase: "0",
         exposureBase: "0",
-        reasons: ["FUNDS_NOT_CONFIRMED"],
+        reasons: [
+          pendingTrade
+            ? "TAKEN_RECONCILIATION_REQUIRED"
+            : "FUNDS_NOT_CONFIRMED",
+        ],
         passed: false,
       };
     return solveRisk({
@@ -571,10 +582,90 @@ export class Store {
     id: string,
     expected: number,
     now: number,
+    recovery?: {
+      expectedAttemptId: string | null;
+      recovery: true;
+      sourceAttemptId: string;
+    },
   ): { plan: Plan; risk: RiskResult } {
     return this.transaction(() => {
       const p = this.plan(id);
       this.assertVersion(p, expected);
+      let recoveryQuantity: number | undefined;
+      if (recovery) {
+        if (p.attemptId !== recovery.expectedAttemptId)
+          throw new ApiError(
+            409,
+            "ATTEMPT_CONFLICT",
+            "当前尝试已改变，请重新读取",
+          );
+        const previous = this.db
+          .prepare("SELECT * FROM attempts WHERE id=?")
+          .get(recovery.sourceAttemptId) as
+          | {
+              plan_id: string;
+              plan_version: number;
+              consumed: number;
+              json: string;
+            }
+          | undefined;
+        if (
+          !previous ||
+          previous.plan_id !== p.id ||
+          previous.consumed ||
+          !(
+            ["DATA_PAUSED", "USER_PAUSED"].includes(p.status) ||
+            (p.status === "DRAFT" && p.attemptId === null)
+          )
+        )
+          throw new ApiError(
+            409,
+            "RECOVERY_UNAVAILABLE",
+            "只有尚未消费且已暂停的尝试可以建立恢复后新尝试",
+          );
+        const sourcePlan = parse<Plan>(
+          this.db
+            .prepare(
+              "SELECT json FROM plan_versions WHERE plan_id=? AND version=?",
+            )
+            .get(p.id, previous.plan_version),
+        );
+        if (
+          sourcePlan?.sessionDate !== p.sessionDate ||
+          sourcePlan.instrumentId !== p.instrumentId
+        )
+          throw new ApiError(
+            409,
+            "RECOVERY_SOURCE_CHANGED",
+            "恢复尝试必须沿用原证券与交易会话",
+          );
+        const source = JSON.parse(previous.json) as {
+          approvedQuantity?: number;
+        };
+        const previousReservation = this.reservations().find(
+          (r) => r.planId === id && r.attemptId === recovery.sourceAttemptId,
+        );
+        recoveryQuantity =
+          p.approvedQuantity > 0
+            ? p.approvedQuantity
+            : (source.approvedQuantity ?? previousReservation?.quantity);
+        if (!Number.isSafeInteger(recoveryQuantity) || recoveryQuantity! <= 0)
+          throw new ApiError(
+            409,
+            "RECOVERY_QUANTITY_UNAVAILABLE",
+            "原尝试的批准数量不可用，请重新核对计划",
+          );
+      }
+      if (
+        this.reservations().some(
+          (r) => r.planId === id && r.state === "TAKEN_PENDING",
+        )
+      )
+        throw new ApiError(
+          409,
+          "TAKEN_RECONCILIATION_REQUIRED",
+          "该计划的已交易占用尚待核对，请先确认已包含实际交易的新资金快照",
+        );
       const supportReasons = this.supportRevisionReasons(p, now);
       if (supportReasons.length)
         throw new ApiError(
@@ -588,7 +679,7 @@ export class Store {
           "SUPPORT_NOT_READY",
           p.supportSnapshot?.reasons.join("；") ?? "支撑快照缺失",
         );
-      if (activeStatuses.includes(p.status)) {
+      if (activeStatuses.includes(p.status) && !recovery) {
         if (p.attemptId && p.status === "WAIT_RETEST")
           return {
             plan: p,
@@ -601,11 +692,12 @@ export class Store {
         );
       }
       if (
-        this.plans().filter((x) => activeStatuses.includes(x.status)).length >=
-        10
+        this.plans().filter(
+          (x) => x.id !== p.id && activeStatuses.includes(x.status),
+        ).length >= 10
       )
         throw new ApiError(422, "MONITOR_LIMIT", "最多同时监测 10 个计划");
-      const risk = this.risk(p, now);
+      const risk = this.risk(p, now, p.entryMax, recoveryQuantity);
       if (!risk.passed)
         throw new ApiError(422, "RISK_BLOCKED", risk.reasons.join("；"));
       const attemptId = randomUUID();
@@ -626,6 +718,13 @@ export class Store {
           evidenceEpoch: randomUUID(),
           kind: "SYNTHETIC_REPLAY",
           version: p.version,
+          approvedQuantity: risk.quantity,
+          ...(recovery
+            ? {
+                template: "RECOVERY",
+                parentAttemptId: recovery.sourceAttemptId,
+              }
+            : {}),
         }),
       );
       this.writePlan(updated);
@@ -633,6 +732,9 @@ export class Store {
         (m, r) => Math.max(m, r.allocationOrder),
         0,
       );
+      const previousReservation = recovery
+        ? this.reservations().find((r) => r.planId === id)
+        : undefined;
       this.writeReservation({
         planId: id,
         attemptId,
@@ -643,7 +745,7 @@ export class Store {
         cash: risk.cashUse,
         riskBase: risk.riskBase,
         exposureBase: risk.exposureBase,
-        allocationOrder: maxOrder + 1,
+        allocationOrder: previousReservation?.allocationOrder ?? maxOrder + 1,
         state: "ACTIVE",
       });
       return { plan: updated, risk };
@@ -658,6 +760,12 @@ export class Store {
           409,
           "PENDING_ENTRY",
           "提醒尚待处理；请明确记录已交易或已跳过",
+        );
+      if (["TAKEN", "SKIPPED"].includes(p.status))
+        throw new ApiError(
+          409,
+          "ATTEMPT_FINISHED",
+          "该尝试已经完成；如需继续观察，请显式启用新的尝试",
         );
       const updated = { ...p, status: "USER_PAUSED", updatedAt: now };
       this.release(id);
