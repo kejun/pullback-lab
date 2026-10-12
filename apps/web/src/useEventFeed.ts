@@ -143,7 +143,26 @@ export function useEventFeed(enabled: boolean) {
     let restoring = false;
     let authCheckPending = false;
     let authCheckAt = 0;
+    let closedFailures = 0;
+    let sessionExpired = false;
     const abort = new AbortController();
+    const retryClosedStream = () => {
+      if (
+        !active ||
+        restoring ||
+        sessionExpired ||
+        source?.readyState !== EventSource.CLOSED
+      )
+        return;
+      const connection = connectionSerial;
+      clearTimeout(timer);
+      timer = setTimeout(
+        () => {
+          if (active && connection === connectionSerial) void restore();
+        },
+        Math.min(1000 * 2 ** closedFailures++, 30000),
+      );
+    };
     const connect = (cursor: string) => {
       if (!active) return;
       const connection = ++connectionSerial;
@@ -151,18 +170,30 @@ export function useEventFeed(enabled: boolean) {
         `/api/events/stream?after=${encodeURIComponent(cursor)}`,
       );
       source.onopen = () => {
-        if (active && connection === connectionSerial) setStream("已连接");
+        if (active && connection === connectionSerial) {
+          closedFailures = 0;
+          setStream("已连接");
+        }
       };
       source.onerror = () => {
         if (!active || connection !== connectionSerial) return;
         setStream("正在重连");
         // A 401 during the handshake never reaches the stream's auth-expired event.
         // Distinguish a lost session from an ordinary network interruption.
-        if (authCheckPending || Date.now() - authCheckAt < 5000) return;
+        const permanentlyClosed = source?.readyState === EventSource.CLOSED;
+        if (
+          authCheckPending ||
+          (!permanentlyClosed && Date.now() - authCheckAt < 5000)
+        )
+          return;
         authCheckPending = true;
         authCheckAt = Date.now();
+        const probeAbort = new AbortController();
+        const cancelProbe = () => probeAbort.abort();
+        abort.signal.addEventListener("abort", cancelProbe, { once: true });
+        const probeTimeout = setTimeout(cancelProbe, 8000);
         void api<{ authenticated: boolean }>("/session", "GET", undefined, {
-          signal: abort.signal,
+          signal: probeAbort.signal,
         })
           .then((session) => {
             if (
@@ -172,15 +203,20 @@ export function useEventFeed(enabled: boolean) {
             ) {
               source?.close();
               connectionSerial++;
+              sessionExpired = true;
               setStream("登录已过期");
               setAuthExpired(true);
             }
           })
           .catch(() => {
-            /* A network failure leaves native reconnection enabled. */
+            /* Recovering connections retry natively; CLOSED needs an explicit retry. */
           })
           .finally(() => {
+            clearTimeout(probeTimeout);
+            abort.signal.removeEventListener("abort", cancelProbe);
             authCheckPending = false;
+            // A second error may have closed this stream while the probe was pending.
+            retryClosedStream();
           });
       };
       source.addEventListener("events", (message) => {
@@ -200,6 +236,8 @@ export function useEventFeed(enabled: boolean) {
       source.addEventListener("auth-expired", () => {
         if (!active || connection !== connectionSerial) return;
         source?.close();
+        connectionSerial++;
+        sessionExpired = true;
         setStream("登录已过期");
         setAuthExpired(true);
       });
@@ -212,6 +250,7 @@ export function useEventFeed(enabled: boolean) {
     const restore = async () => {
       if (!active || restoring) return;
       restoring = true;
+      clearTimeout(timer);
       connectionSerial++;
       setStream("正在恢复记录");
       try {
@@ -238,6 +277,7 @@ export function useEventFeed(enabled: boolean) {
         if (!active) return;
         restoring = false;
         if (cause instanceof ApiError && cause.status === 401) {
+          sessionExpired = true;
           setStream("登录已过期");
           setAuthExpired(true);
           return;
