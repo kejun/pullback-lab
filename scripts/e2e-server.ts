@@ -6,4 +6,11 @@ import { join } from "node:path";
 const directory = mkdtempSync(join(tmpdir(), "pullback-e2e-"));
 process.env.PULLBACK_DB = join(directory, "research.sqlite");
 process.on("exit", () => rmSync(directory, { recursive: true, force: true }));
+if (
+  process.env.NODE_ENV === "test" &&
+  process.env.ACTION_EVIDENCE_E2E === "1"
+) {
+  const { seedActionEvidence } = await import("./e2e-action-evidence.js");
+  seedActionEvidence(process.env.PULLBACK_DB);
+}
 await import("../apps/server/main.js");

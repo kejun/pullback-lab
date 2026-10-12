@@ -9,6 +9,7 @@ const scenarios = [
   "candidates",
   "operations",
   "recovery",
+  "action-evidence",
 ] as const;
 
 export default defineConfig({
@@ -35,7 +36,7 @@ export default defineConfig({
         }
       : undefined,
   },
-  webServer: scenarios.map((_name, index) => ({
+  webServer: scenarios.map((name, index) => ({
     command: "node --import tsx scripts/e2e-server.ts",
     url: `http://127.0.0.1:${4180 + index}/api/health`,
     reuseExistingServer: false,
@@ -45,6 +46,7 @@ export default defineConfig({
       PULLBACK_PASSWORD: "e2e-only-password",
       PULLBACK_DEMO: "1",
       NODE_ENV: "test",
+      ACTION_EVIDENCE_E2E: name === "action-evidence" ? "1" : "0",
     },
   })),
 });

@@ -29,6 +29,7 @@ import {
 } from "./universe-service.js";
 import { registerPriceProposalRoutes } from "./price-proposal.js";
 import { registerOperationsRoutes } from "./operations-status.js";
+import { registerActionEvidenceRoutes } from "./action-evidence-query.js";
 import { auditDecisionInput } from "./audit-replay.js";
 import {
   BoundedEventWriter,
@@ -231,6 +232,7 @@ export async function createApp(
     });
   });
   registerPriceProposalRoutes(app, store);
+  registerActionEvidenceRoutes(app, store);
   registerOperationsRoutes(app, store, {
     now,
     secureCookies: options.secureCookies,

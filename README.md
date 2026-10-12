@@ -75,6 +75,8 @@ npm run probe -- --symbols AAPL.US --observe-seconds 30 --output probe-evidence.
 - [第五批实现与验证](docs/acceptance-v5.md)
 - [第六批实现与验证](docs/acceptance-v6.md)
 - [第七批实现与验证](docs/acceptance-v7.md)
+- [第八批实现与验证](docs/acceptance-v8.md)
+- [第九批实现与验证](docs/acceptance-v9.md)
 - [单主机私有部署](docs/deployment.md)
 - [私有部署与备份恢复](docs/operations.md)
 
@@ -83,3 +85,5 @@ Linear 项目：<https://linear.app/kejunz/project/pullback-lab-回调交易研�
 ## 公司行动证据
 
 `npm run actions:import -- MANIFEST.json` 预览人工核对的公司行动清单；停止应用后加 `--apply` 写入。导入保存不可变来源文本、覆盖范围、修订及系统接收时间，并原子暂停受影响计划。`--current INSTRUMENT_ID` 可读取当前证据版本。真实行情仍未开放；操作步骤、信任边界与合成示例见 [公司行动证据导入](docs/corporate-actions.md) 和 [第八批验收](docs/acceptance-v8.md)。
+
+研究页的「公司行动证据」面板可只读查看覆盖声明、来源原文和收录历史，并与前一版本比较。原文按需读取，历史查阅不改变图表或计划；已有证据的证券不可移出观察列表。页面能力与验收见 [第九批验收](docs/acceptance-v9.md)。
