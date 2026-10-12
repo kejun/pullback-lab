@@ -3301,3 +3301,8 @@ details > summary {
   padding-top: 12px;
   min-width: 0;
 }
+.provider-receipts, .receipt-detail { min-width: 0; overflow-wrap: anywhere; }
+.receipt-summary, .receipt-comparison { margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 6px; }
+.receipt-payload { margin-top: 12px; }
+.provider-receipts .evidence-version-label { font-size: 12px; }
+.provider-receipts .evidence-source { max-height: 240px; font-size: 11px; }
