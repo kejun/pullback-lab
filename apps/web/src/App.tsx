@@ -15,6 +15,7 @@ import type {
   Candidate,
   Currency,
   DecisionEvent,
+  DecisionEventSummary,
   Funds,
   FeedbackRevision,
   SupportSnapshot,
@@ -25,6 +26,9 @@ import type {
 } from "../../../packages/contracts/index";
 import { api, ApiError } from "./api";
 import ResearchChart from "./ResearchChart";
+import type { ChartPriceProposal, PlanPriceField } from "./chart-price";
+import { useEventFeed } from "./useEventFeed";
+import { SyntheticRuntime } from "./SyntheticRuntime";
 import { SupportEditor } from "./SupportEditor";
 import { MarketStatus } from "./MarketStatus";
 import {
@@ -68,6 +72,16 @@ const EMPTY_BOOT: Bootstrap = {
   plans: [],
   funds: null,
   events: [],
+  eventPage: {
+    events: [],
+    beforeCursor: null,
+    afterCursor: null,
+    feedCursor: "",
+    feedRevision: 0,
+    feedEpoch: "",
+    hasMore: false,
+    counts: { total: 0, unread: 0, pending: 0, taken: 0, skipped: 0 },
+  },
   screeningConfirmed: false,
 };
 const blankPlan = (instrumentId = ""): PlanInput => ({
@@ -129,6 +143,7 @@ const eventLabel: Record<string, string> = {
   PLAN_PAUSED: "观察已暂停",
   HISTORICAL_MATCH: "历史条件命中",
   HISTORICAL_TRIGGERED: "合成演练 · 条件命中",
+  LATE_TECHNICAL_REFERENCE: "迟到技术参考",
 };
 function num(value: string | number | null | undefined, digits = 2) {
   if (value == null || value === "") return "—";
@@ -162,26 +177,12 @@ function when(value: number | null | undefined) {
 function shortDate(value: number | null) {
   return value ? new Date(value * 1000).toISOString().slice(0, 10) : "尚未选择";
 }
-function canRecord(event: DecisionEvent) {
-  return (
-    event.type === "ENTRY_TRIGGERED" ||
-    (event.type === "HISTORICAL_TRIGGERED" && event.snapshot.synthetic === true)
-  );
-}
-function mergeEvents(previous: DecisionEvent[], incoming: DecisionEvent[]) {
-  const map = new Map(previous.map((e) => [e.id, e]));
-  incoming.forEach((e) => {
-    const old = map.get(e.id);
-    map.set(e.id, {
-      ...old,
-      ...e,
-      read: e.read || old?.read || false,
-      feedback: e.feedback ?? old?.feedback ?? null,
-    });
-  });
-  return [...map.values()].sort(
-    (a, b) => b.time - a.time || a.id.localeCompare(b.id),
-  );
+function canRecord(event: DecisionEvent | DecisionEventSummary) {
+  return "recordable" in event
+    ? event.recordable
+    : event.type === "ENTRY_TRIGGERED" ||
+        (event.type === "HISTORICAL_TRIGGERED" &&
+          event.snapshot.synthetic === true);
 }
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
   const paths: Record<string, ReactNode> = {
@@ -340,7 +341,12 @@ export default function App() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [coverage, setCoverage] = useState(0);
   const [asOf, setAsOf] = useState("");
-  const [events, setEvents] = useState<DecisionEvent[]>([]);
+  const eventFeed = useEventFeed(Boolean(session?.authenticated));
+  const { events, counts: eventCounts, stream } = eventFeed;
+  const [eventDetail, setEventDetail] = useState<DecisionEvent | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const detailLoadSeq = useRef(0);
   const [page, setPage] = useState<Page>("candidates");
   const [settings, setSettings] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -350,7 +356,6 @@ export default function App() {
     conflict?: boolean;
   } | null>(null);
   const [password, setPassword] = useState("");
-  const [stream, setStream] = useState("连接中");
   const [market, setMarket] = useState<"US" | "CN">("US");
   const [filter, setFilter] = useState("ALL");
   const [search, setSearch] = useState("");
@@ -417,28 +422,30 @@ export default function App() {
   const [conflictReview, setConflictReview] = useState<ConflictReview | null>(
     null,
   );
-  const refreshRef = useRef<() => Promise<void>>(async () => {});
   const planEditSeq = useRef(0);
   const researchContext = useRef("");
   researchContext.current = `${selectedId}:${savedPlan?.id || "new"}`;
+  const priceProposalSeq = useRef(0);
+  const priceProposalContext = useRef("");
   const refreshSeq = useRef(0);
-  async function refresh() {
+  async function refresh(updateSelected = false) {
+    const context = priceProposalContext.current;
     const requested = ++refreshSeq.current;
-    const [b, c, e] = await Promise.all([
+    const [b, c] = await Promise.all([
       api<Bootstrap>("/bootstrap"),
       api<{ candidates: Candidate[]; coverage: number; asOf: string }>(
         "/candidates",
       ),
-      api<{ events: DecisionEvent[] }>("/events"),
     ]);
     if (requested !== refreshSeq.current) return;
     setBoot(b);
     setCandidates(c.candidates);
     setCoverage(c.coverage);
     setAsOf(c.asOf);
-    setEvents((previous) => mergeEvents(previous, e.events));
+    eventFeed.acceptPage(b.eventPage);
+    if (updateSelected && context === priceProposalContext.current && savedPlan)
+      setSavedPlan(b.plans.find((row) => row.id === savedPlan.id) ?? savedPlan);
   }
-  refreshRef.current = refresh;
   async function action(
     fn: () => Promise<void>,
     success?: string,
@@ -475,7 +482,7 @@ export default function App() {
     await action(async () => {
       const latest = await api<Bootstrap>("/bootstrap");
       setBoot(latest);
-      setEvents((previous) => mergeEvents(previous, latest.events));
+      eventFeed.acceptPage(latest.eventPage);
       const target = pending.target;
       setConflictReview((current) =>
         current?.requestId === pending.requestId
@@ -527,19 +534,38 @@ export default function App() {
   useEffect(() => {
     if (!session?.authenticated) return;
     void action(refresh);
-    const source = new EventSource("/api/events/stream");
-    source.onopen = () => setStream("已连接");
-    source.onerror = () => setStream("正在重连");
-    source.onmessage = (message) => {
-      try {
-        const event = JSON.parse(message.data) as DecisionEvent;
-        if (event.id) setEvents((prev) => mergeEvents(prev, [event]));
-      } catch {
-        /* Ignore heartbeat payloads. */
-      }
-    };
-    return () => source.close();
+    const id = feedbackContext.current;
+    if (id) {
+      setFeedbackConflict({ eventId: id, loaded: false });
+      void loadEventDetail(id);
+    }
   }, [session?.authenticated]);
+  useEffect(() => {
+    if (!eventFeed.authExpired) return;
+    refreshSeq.current++;
+    detailLoadSeq.current++;
+    feedbackLoadSeq.current++;
+    setEventDetail(null);
+    setFeedbackHistory([]);
+    setFeedbackLoading(false);
+    setSession((current) =>
+      current ? { ...current, authenticated: false } : current,
+    );
+    setNotice({
+      text: "登录已过期。重新登录后可继续，当前输入已保留。",
+      error: true,
+    });
+  }, [eventFeed.authExpired]);
+  useEffect(() => {
+    const id = feedbackContext.current;
+    if (!id || eventFeed.resetVersion === 0) return;
+    feedbackLoadSeq.current++;
+    setFeedbackHistory([]);
+    setFeedbackLoading(false);
+    setEventDetail(null);
+    setFeedbackConflict({ eventId: id, loaded: false });
+    void loadEventDetail(id);
+  }, [eventFeed.resetVersion]);
   useEffect(() => {
     if (!selectedId) {
       setChart(EMPTY_CHART);
@@ -625,7 +651,7 @@ export default function App() {
             )
           ? "行情能力尚未达到实时观察要求，当前仅供研究。"
           : "";
-  const unread = events.filter((e) => !e.read).length;
+  const unread = eventCounts.unread;
   const activeCount = boot.plans.filter((p) =>
     ["WAIT_RETEST", "ARMED", "ACTIVE"].includes(p.status),
   ).length;
@@ -665,7 +691,27 @@ export default function App() {
       (eventFilter === "PENDING" && !e.feedback && canRecord(e)) ||
       e.feedback === eventFilter,
   );
-  const event = events.find((e) => e.id === selectedEvent);
+  const selectedSummary = events.find((row) => row.id === selectedEvent);
+  const event =
+    eventDetail?.id === selectedEvent
+      ? {
+          ...eventDetail,
+          read: selectedSummary?.read ?? eventDetail.read,
+          feedback: selectedSummary?.feedback ?? eventDetail.feedback,
+        }
+      : null;
+  const remoteFeedbackChanged = Boolean(
+    selectedSummary?.feedbackRevisionId &&
+    !feedbackLoading &&
+    selectedSummary.feedbackRevisionId !== (feedbackHistory.at(-1)?.id ?? null),
+  );
+  priceProposalContext.current = JSON.stringify([
+    selectedId,
+    period,
+    savedPlan?.id,
+    savedPlan?.version,
+    instrument,
+  ]);
   function openResearch(id: string, existing?: Plan) {
     planEditSeq.current++;
     setSelectedId(id);
@@ -688,6 +734,32 @@ export default function App() {
     setPlan((p) => ({ ...p, [key]: value }));
     setDirty(true);
     setRisk(null);
+  }
+  async function proposeChartPrice(
+    field: PlanPriceField,
+    proposal: ChartPriceProposal,
+  ) {
+    const requested = ++priceProposalSeq.current;
+    const context = priceProposalContext.current;
+    const editing = planEditSeq.current;
+    const result = await api<{
+      price: string;
+      tick: string;
+      instrumentRevision: string;
+    }>(
+      `/instruments/${encodeURIComponent(selectedId)}/price-proposal`,
+      "POST",
+      proposal,
+    );
+    if (
+      requested !== priceProposalSeq.current ||
+      context !== priceProposalContext.current ||
+      editing !== planEditSeq.current
+    )
+      throw new Error("草稿已变更，本次调价已取消。");
+    if (result.tick !== instrument?.tick)
+      throw new Error("证券变价规则已变更，请刷新研究页面后重新调价。");
+    updatePlan(field, result.price);
   }
   function setSamplePlan() {
     planEditSeq.current++;
@@ -925,7 +997,28 @@ export default function App() {
         setFeedbackLoading(false);
     }
   }
-  function openEvent(e: DecisionEvent) {
+  async function loadEventDetail(id: string) {
+    const requested = ++detailLoadSeq.current;
+    setDetailLoading(true);
+    setDetailError(null);
+    try {
+      const result = await api<DecisionEvent>(
+        `/events/${encodeURIComponent(id)}`,
+      );
+      if (feedbackContext.current === id && requested === detailLoadSeq.current)
+        setEventDetail(result);
+    } catch (cause) {
+      if (feedbackContext.current === id && requested === detailLoadSeq.current)
+        setDetailError(
+          cause instanceof Error ? cause.message : "判断快照暂时无法读取。",
+        );
+    } finally {
+      if (feedbackContext.current === id && requested === detailLoadSeq.current)
+        setDetailLoading(false);
+    }
+  }
+  function openEvent(e: DecisionEventSummary) {
+    if (feedbackContext.current === e.id) return;
     feedbackContext.current = e.id;
     feedbackTouched.current = {
       note: false,
@@ -936,22 +1029,25 @@ export default function App() {
     setFeedbackHistory([]);
     setFeedbackConflict(null);
     setSelectedEvent(e.id);
+    setEventDetail(null);
     setFeedbackNote("");
     setActualPrice("");
     setActualQuantity("");
     setActualTime("");
+    void loadEventDetail(e.id);
     void loadFeedback(e.id, true);
     if (!e.read)
       void action(async () => {
         await api(`/events/${e.id}/read`, "POST");
-        setEvents((prev) =>
-          prev.map((row) => (row.id === e.id ? { ...row, read: true } : row)),
-        );
+        await refresh();
       });
   }
   async function feedback(kind: "TAKEN" | "SKIPPED") {
     if (!event || !canRecord(event)) return;
-    if (feedbackConflict?.eventId === event.id && !feedbackConflict.loaded) {
+    if (
+      remoteFeedbackChanged ||
+      (feedbackConflict?.eventId === event.id && !feedbackConflict.loaded)
+    ) {
       setNotice({
         text: "请先读取最新反馈并核对修订历史。当前输入已保留。",
         error: true,
@@ -1154,9 +1250,14 @@ export default function App() {
             onClick={() =>
               void action(async () => {
                 await api("/logout", "POST");
+                refreshSeq.current++;
                 setSession({ ...session, authenticated: false });
                 setBoot(EMPTY_BOOT);
-                setEvents([]);
+                feedbackContext.current = null;
+                detailLoadSeq.current++;
+                feedbackLoadSeq.current++;
+                setEventDetail(null);
+                setSelectedEvent(null);
               })
             }
           >
@@ -1750,13 +1851,15 @@ export default function App() {
                             {...chart}
                             period={period}
                             plan={plan}
+                            instrumentTick={instrument.tick}
+                            onPriceProposal={proposeChartPrice}
                             onAnchor={(time) => updatePlan("anchorTime", time)}
                           />
                         </div>
                         <div className="chart-help">
                           <Icon name="info" size={15} />
                           {period === "1D"
-                            ? "点击一根已完成日线设置 AVWAP 锚点；价格线可在右侧表单精确调整。"
+                            ? "点击已完成日线设置 AVWAP 锚点；开启图表调价后可拖动价格线，或使用最小变价单位按钮微调。"
                             : "AVWAP 固定采用已完成日线的基准值，分钟图展示同一参考，不重新计算分钟锚点。"}
                         </div>
                       </section>
@@ -2352,20 +2455,26 @@ export default function App() {
                               : "先保存改动，再检查和启用新版本。"}
                           </small>
                         )}
+                        {boot.demo &&
+                          savedPlan &&
+                          savedPlan.instrumentId.startsWith("DEMO-") && (
+                            <SyntheticRuntime
+                              key={`${savedPlan.id}:${savedPlan.version}:${savedPlan.attemptId ?? "none"}`}
+                              plan={savedPlan}
+                              disabled={busy || dirty}
+                              onBusyChange={setBusy}
+                              onChanged={() => refresh(true)}
+                            />
+                          )}
                         {boot.demo && savedPlan && (
                           <button
                             className="text-button replay-button"
                             disabled={busy || dirty}
                             onClick={() =>
                               void action(async () => {
-                                const result = await api<{
-                                  events: DecisionEvent[];
-                                }>(
+                                await api(
                                   `/demo/plans/${savedPlan.id}/replay`,
                                   "POST",
-                                );
-                                setEvents((prev) =>
-                                  mergeEvents(prev, result.events),
                                 );
                                 await refresh();
                               }, "合成回放已完成，请在「提醒与记录」查看结果。")
@@ -2406,25 +2515,19 @@ export default function App() {
               </div>
               <div className="event-summary">
                 <div>
-                  <strong>{events.length}</strong>
+                  <strong>{eventCounts.total}</strong>
                   <span>全部记录</span>
                 </div>
                 <div>
-                  <strong>
-                    {events.filter((e) => !e.feedback && canRecord(e)).length}
-                  </strong>
+                  <strong>{eventCounts.pending}</strong>
                   <span>待记录选择</span>
                 </div>
                 <div>
-                  <strong>
-                    {events.filter((e) => e.feedback === "TAKEN").length}
-                  </strong>
+                  <strong>{eventCounts.taken}</strong>
                   <span>已交易</span>
                 </div>
                 <div>
-                  <strong>
-                    {events.filter((e) => e.feedback === "SKIPPED").length}
-                  </strong>
+                  <strong>{eventCounts.skipped}</strong>
                   <span>已跳过</span>
                 </div>
               </div>
@@ -2458,6 +2561,7 @@ export default function App() {
                       return (
                         <button
                           key={e.id}
+                          data-event-id={e.id}
                           className={`event-row ${selectedEvent === e.id ? "selected" : ""}`}
                           onClick={() => openEvent(e)}
                         >
@@ -2505,8 +2609,40 @@ export default function App() {
                       text="启用计划后，技术事件与风险阻断会保存在这里。没有事件时不会生成示例提醒。"
                     />
                   )}
+                  <div className="event-pagination">
+                    <small>
+                      已载入 {events.length} / {eventCounts.total}{" "}
+                      条；筛选作用于已载记录。
+                    </small>
+                    {eventFeed.error && <p role="alert">{eventFeed.error}</p>}
+                    {eventFeed.hasMore && (
+                      <button
+                        className="button secondary compact"
+                        disabled={eventFeed.loadingOlder}
+                        onClick={() => void eventFeed.loadOlder()}
+                      >
+                        {eventFeed.loadingOlder
+                          ? "正在读取较早记录…"
+                          : "加载更早记录"}
+                      </button>
+                    )}
+                  </div>
                 </section>
-                <aside className="panel event-detail">
+                <aside className="panel event-detail" aria-busy={detailLoading}>
+                  {detailLoading && <p role="status">正在读取完整判断快照…</p>}
+                  {detailError && (
+                    <div className="support-warning" role="alert">
+                      <p>{detailError}</p>
+                      <button
+                        className="button secondary compact"
+                        onClick={() =>
+                          selectedEvent && void loadEventDetail(selectedEvent)
+                        }
+                      >
+                        重试读取判断快照
+                      </button>
+                    </div>
+                  )}
                   {event ? (
                     <>
                       <div className="section-heading">
@@ -2572,7 +2708,8 @@ export default function App() {
                               ? "已读取最新记录。更正会追加一个修订版本，保留先前的实际值。"
                               : "填写一次入场摘要。没有填写的字段保持为空。"}
                           </p>
-                          {feedbackConflict?.eventId === event.id && (
+                          {(remoteFeedbackChanged ||
+                            feedbackConflict?.eventId === event.id) && (
                             <div
                               className="feedback-conflict support-warning"
                               role="region"
@@ -2580,7 +2717,8 @@ export default function App() {
                             >
                               <strong>另一处已保存了新反馈</strong>
                               <p>
-                                {feedbackConflict.loaded
+                                {feedbackConflict?.loaded &&
+                                !remoteFeedbackChanged
                                   ? "最新修订已显示在上方。当前输入保持不变；核对差异后，再次点击已交易或已跳过才会保存。"
                                   : "当前备注和实际值已保留。请读取最新反馈，再核对历史与当前输入；系统不会自动重试。"}
                               </p>
@@ -2664,6 +2802,7 @@ export default function App() {
                                 busy ||
                                 feedbackLoading ||
                                 Boolean(feedbackError) ||
+                                remoteFeedbackChanged ||
                                 (feedbackConflict?.eventId === event.id &&
                                   !feedbackConflict.loaded)
                               }
@@ -2677,6 +2816,7 @@ export default function App() {
                                 busy ||
                                 feedbackLoading ||
                                 Boolean(feedbackError) ||
+                                remoteFeedbackChanged ||
                                 (feedbackConflict?.eventId === event.id &&
                                   !feedbackConflict.loaded)
                               }

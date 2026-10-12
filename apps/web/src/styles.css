@@ -3026,3 +3026,49 @@ details > summary {
     grid-template-columns: 105px minmax(0, 1fr);
   }
 }
+
+.event-pagination {
+  display: grid;
+  gap: 12px;
+  padding: 20px 24px;
+  border-top: 1px solid var(--border);
+}
+.event-pagination small {
+  color: var(--muted);
+}
+.event-pagination .button {
+  justify-self: start;
+}
+.synthetic-runtime {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 18px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.synthetic-runtime h3,
+.synthetic-runtime p {
+  margin: 0;
+}
+.synthetic-runtime p,
+.synthetic-runtime small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.synthetic-runtime .section-heading {
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.synthetic-runtime .text-button {
+  font-size: 11px;
+}
+.synthetic-runtime progress {
+  width: 100%;
+  height: 6px;
+  accent-color: var(--green);
+}
+.synthetic-runtime .detail-list {
+  margin: 0;
+}
