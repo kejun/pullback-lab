@@ -66,6 +66,12 @@ test("research workflow preserves plans, records and stale-funds protection", as
     fullPage: true,
   });
   await page.getByRole("button", { name: "填入合成示例计划" }).click();
+  const support = page.getByRole("region", { name: "支撑家族与证据" });
+  await expect(support).toContainText("支撑证据完整");
+  await support.getByLabel("EMA 9", { exact: true }).uncheck();
+  await expect(support).toContainText("待补充证据");
+  await support.getByLabel("EMA 9", { exact: true }).check();
+  await expect(support).toContainText("支撑证据完整");
   await page.getByLabel(/我已确认回踩背景/).check();
   await page.getByRole("button", { name: /保存研究计划|保存计划/ }).click();
   await expect(page.getByRole("button", { name: "保存新版本" })).toBeVisible();
@@ -122,14 +128,72 @@ test("research workflow preserves plans, records and stale-funds protection", as
     .first()
     .click();
   await expect(page.locator(".event-detail")).toContainText("历史");
+  const audit = page.getByRole("region", { name: "只读历史回放" });
+  await audit.getByRole("button", { name: "验证冻结输入" }).click();
+  await expect(audit).toContainText("冻结输入回放一致");
   await page
     .getByLabel("备注", { exact: true })
     .fill("自动化验收：合成回放，人工确认入场摘要。");
+  await page.getByText("实际入场摘要（可选）", { exact: true }).click();
+  await page.getByLabel("实际均价", { exact: true }).fill("102.1234");
+  await page.getByLabel("实际数量", { exact: true }).fill("10000");
   await page
     .getByRole("button", { name: "已交易", exact: true })
     .last()
     .click();
   await expect(page.locator(".event-detail")).toContainText("已交易");
+  const revisions = page.getByRole("region", { name: "反馈修订历史" });
+  await expect(revisions).toContainText("102.1234");
+  await expect(revisions).toContainText("实际均价超出计划入场区");
+  await expect(revisions).toContainText("实际数量高于核算数量");
+  await page
+    .getByLabel("备注", { exact: true })
+    .fill("更正备注；保留原始实际价量。");
+  const entry = (
+    (await (await page.request.get("/api/bootstrap")).json()) as Bootstrap
+  ).events.find((row) => row.type === "HISTORICAL_TRIGGERED")!;
+  const priorFeedback = await (
+    await page.request.get(`/api/events/${entry.id}/feedback`)
+  ).json();
+  const concurrentFeedback = await page.request.post(
+    `/api/events/${entry.id}/feedback`,
+    {
+      headers: { "X-Requested-With": "PullbackLab" },
+      data: {
+        kind: "TAKEN",
+        note: "另一标签页补充记录",
+        actualPrice: "102.1234",
+        actualQuantity: 10000,
+        expectedRevisionId: priorFeedback.revisions.at(-1).id,
+      },
+    },
+  );
+  expect(concurrentFeedback.status()).toBe(200);
+  await page
+    .getByRole("button", { name: "已交易", exact: true })
+    .last()
+    .click();
+  const feedbackConflict = page.getByRole("region", {
+    name: "反馈版本冲突复核",
+  });
+  await expect(feedbackConflict).toBeVisible();
+  await expect(page.getByLabel("备注", { exact: true })).toHaveValue(
+    "更正备注；保留原始实际价量。",
+  );
+  await feedbackConflict
+    .getByRole("button", { name: "读取最新反馈，保留当前输入" })
+    .click();
+  await expect(revisions).toContainText("另一标签页补充记录");
+  await page
+    .getByRole("button", { name: "已交易", exact: true })
+    .last()
+    .click();
+  await expect(revisions.locator(".feedback-revision")).toHaveCount(3);
+  await expect(page.getByLabel("实际均价", { exact: true })).toHaveValue(
+    "102.1234",
+  );
+  await audit.getByRole("button", { name: "验证冻结输入" }).click();
+  await expect(audit).toContainText("冻结输入回放一致");
   await page.screenshot({
     path: test.info().outputPath("records.png"),
     fullPage: true,

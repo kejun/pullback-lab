@@ -11,13 +11,22 @@
 - POST /api/demo/seed 显式载入合成数据（只在 demo 启动配置允许时）
 - GET /api/instruments/:id/bars?period=1D|1m|5m → {bars:Bar[],ema9:(string|null)[],ema21:(string|null)[],ema50:(string|null)[],avwap:(string|null)[],synthetic:boolean}
 - POST /api/plans PlanInput → Plan；POST /api/plans/:id/versions {...PlanInput,expectedVersion} → Plan
+- POST /api/plans/support-preview {instrumentId,anchorTime,primarySupport,supportSelections,sessionDate?} → SupportSnapshot；只接受支撑选择，EMA/ATR/AVWAP 价格与 ready 状态均由服务端核算
 - POST /api/plans/:id/risk → RiskResult；POST /api/plans/:id/activate {expectedVersion} → {plan:Plan,risk:RiskResult}；POST /api/plans/:id/pause {expectedVersion} → Plan
 - POST /api/funds {...Funds,expectedGeneration:number} → Funds（新建 expectedGeneration=0）
 - GET /api/events → {events:DecisionEvent[]}；GET /api/events/stream → SSE data: DecisionEvent、id: event_id
 - POST /api/events/:id/read → {ok:true}
-- POST /api/events/:id/feedback {kind:'TAKEN'|'SKIPPED',note,actualPrice?,actualQuantity?,actualTime?} → {ok:true}
+- POST /api/events/:id/feedback {kind:'TAKEN'|'SKIPPED',note,actualPrice?,actualQuantity?,actualTime?,expectedRevisionId?} → {ok:true}；界面提交当前已读版本，无历史时传 null，过期版本返回 409 并保留草稿
+- GET /api/events/:id/feedback → {revisions:FeedbackRevision[]}；追加修订，保留实际输入和偏离原因，不改写原事件
+- GET /api/events/:id/input → 归档判断输入
+- GET /api/events/:id/replay → {status:'MATCH'|'MISMATCH'|'UNSUPPORTED',checks,reasons,original,replayed,inputHash,algorithmVersion,coverage}；校验原始 JSON 哈希后重放，不写入记录、通知或资金
+- GET /api/market/status → MarketWorkerStatus；采样状态与水位独立于实时能力，liveEligible=false
 - POST /api/demo/plans/:id/replay（仅演示模式）→ {events:DecisionEvent[]} 产生明确标记的合成回放结果，不伪装实时信号
 
 所有写请求携带 X-Requested-With: PullbackLab。命令可携带 Idempotency-Key；生产通过 Cookie 会话认证。前端遇到409保留表单输入并要求重新读取。
 
 真实能力未验证时 activate 返回明确数据阻断，演示模式可运行明确标记的合成尝试。API 禁止让客户端直接提交通过结论。
+
+PlanInput.supportSelections 可选 EMA9/EMA21/EMA50/AVWAP，或带 id、label、price 的 HORIZONTAL；多条 EMA 只算一个家族。Plan.supportSnapshot 为服务端生成的只读版本 2 快照。至少两个容差内家族且含 EMA 或 AVWAP，同时具有完整日线、ATR、规则及复权证据，才允许合成观察。预览的 sessionDate 应与待保存计划相同；冻结依据修订或旧计划缺快照时，启用检查要求显式保存新版本。
+
+审计的 MATCH 只说明所归档输入可复现。算法未知或缺少完整冻结结构时返回 UNSUPPORTED；哈希、输入序列、状态或事件不一致时返回 MISMATCH。coverage 分别标明触发核和最终风险是否重新计算，不能将早期冻结风险门结论的重用解释为独立重新获取行情和资金。

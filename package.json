@@ -15,6 +15,7 @@
     "test:e2e": "playwright test",
     "probe": "node --import tsx scripts/probe.ts",
     "backup": "node --import tsx scripts/backup.ts",
+    "benchmark": "node --import tsx scripts/benchmark.ts",
     "format": "prettier --write apps packages scripts tests *.ts"
   },
   "dependencies": {

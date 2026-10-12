@@ -1,0 +1,107 @@
+{
+  "benchmarkVersion": "pullback-synthetic-v2",
+  "generatedAt": "2026-10-12T11:20:10.523Z",
+  "syntheticOnly": true,
+  "environment": {
+    "node": "v24.19.0",
+    "sqlite": "3.53.4",
+    "os": "linux 6.18.44",
+    "cpu": "AMD EPYC 9V74 80-Core Processor",
+    "availableParallelism": 8,
+    "database": {
+      "kind": "file-backed temporary SQLite",
+      "path": "/tmp/pullback-benchmark-xvjTe9/benchmark.sqlite",
+      "journalMode": "wal",
+      "synchronous": 2,
+      "synchronousName": "FULL",
+      "filesystemTypeHex": "0x794c7630",
+      "removedAfterRun": true
+    },
+    "transport": "Fastify.inject; authenticated HTTP handlers, no socket/network"
+  },
+  "dataset": {
+    "fixture": "DEMO-US-A copied under 100 distinct synthetic instrument IDs",
+    "market": "US",
+    "instruments": 100,
+    "dailyBarsPerInstrument": 300,
+    "minuteBarsPerInstrument": 60,
+    "fiveMinuteBarsPerInstrument": 12,
+    "simultaneousActivatedPlans": 10,
+    "sampleRounds": 30,
+    "archivedAttempts": 300
+  },
+  "methodology": {
+    "percentile": "nearest-rank",
+    "candidatesCold": "first request after instrument metadata mutation, same process; not OS/process cold",
+    "candidatesWarm": "immediate second request with unchanged database; does not assume an application result cache",
+    "replay": "replayPlan from persisted verified synthetic bars through file-backed SQLite WAL/FULL transaction completion, including SQLite synchronization calls",
+    "audit": "read persisted decision_inputs, parse and auditDecisionInput; assert MATCH and no SQLite changes",
+    "setupExcluded": "login, fixture insertion, support-plan creation/versioning, risk activation, feedback and release"
+  },
+  "candidates": {
+    "cold": {
+      "samples": 30,
+      "minMs": 1032.781,
+      "medianMs": 1145.164,
+      "p95Ms": 1320.578,
+      "maxMs": 1504.477
+    },
+    "warm": {
+      "samples": 30,
+      "minMs": 1027.259,
+      "medianMs": 1105.677,
+      "p95Ms": 1311.668,
+      "maxMs": 1470.176
+    }
+  },
+  "historicalReplay": {
+    "perPlan": {
+      "samples": 300,
+      "minMs": 14.081,
+      "medianMs": 17.437,
+      "p95Ms": 25.697,
+      "maxMs": 39.797
+    },
+    "tenPlans": {
+      "samples": 30,
+      "minMs": 152.488,
+      "medianMs": 174.88,
+      "p95Ms": 225.786,
+      "maxMs": 290.987
+    }
+  },
+  "readonlyAudit": {
+    "perPlan": {
+      "samples": 300,
+      "minMs": 9.879,
+      "medianMs": 11.945,
+      "p95Ms": 20.252,
+      "maxMs": 48.585
+    },
+    "tenPlans": {
+      "samples": 30,
+      "minMs": 113.275,
+      "medianMs": 127.882,
+      "p95Ms": 162.588,
+      "maxMs": 255.578
+    }
+  },
+  "localTargets": {
+    "candidatesWarmP95AtMost2000ms": true,
+    "tenHistoricalPlansP95AtMost5000ms": true
+  },
+  "upstream": {
+    "measured": false,
+    "latencyMs": null,
+    "timeoutCount": null,
+    "failureCount": null
+  },
+  "limits": [
+    "All instruments, market bars and attempts are synthetic; no provider credentials or external requests.",
+    "Single process, serial requests and temporary file-backed SQLite with WAL/FULL; includes configured database synchronization calls but not a physical power-loss/durability proof or a production-disk benchmark.",
+    "Socket/network transport, browser rendering, concurrent production load and provider latency are not measured.",
+    "Cold timings invalidate application results only; JIT and operating-system caches can remain warm.",
+    "Historical replay throughput does not establish live receipt-to-alert latency or upstream continuity.",
+    "No live capability, production readiness or trading profitability claim."
+  ]
+}
