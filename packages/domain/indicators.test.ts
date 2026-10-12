@@ -3,6 +3,10 @@ import fc from "fast-check";
 import type { Bar, Candidate, Instrument } from "../contracts/index.js";
 import { D } from "./numeric.js";
 import {
+  DEFAULT_SCREENING_PARAMETERS,
+  normalizeScreeningParameters,
+} from "./screening-rules.js";
+import {
   adr,
   atr,
   avwap,
@@ -311,5 +315,179 @@ describe("indicator safety boundaries", () => {
       ),
       { numRuns: 100 },
     );
+  });
+});
+
+describe("versioned screening thresholds", () => {
+  it("normalizes decimal text and accepts inclusive ADR and rank bounds", () => {
+    expect(
+      normalizeScreeningParameters({
+        minimumAdv20: { US: "10000000.00", CN: "100000000.000" },
+        adrMinPct: "-0.00",
+        adrMaxPct: "100.000",
+        limitPerMarket: 1,
+      }),
+    ).toEqual({
+      minimumAdv20: { US: "10000000", CN: "100000000" },
+      adrMinPct: "0",
+      adrMaxPct: "100",
+      limitPerMarket: 1,
+    });
+    expect(normalizeScreeningParameters(DEFAULT_SCREENING_PARAMETERS)).toEqual(
+      DEFAULT_SCREENING_PARAMETERS,
+    );
+    const copy = normalizeScreeningParameters(DEFAULT_SCREENING_PARAMETERS);
+    copy.minimumAdv20.US = "1";
+    expect(DEFAULT_SCREENING_PARAMETERS.minimumAdv20.US).toBe("10000000");
+  });
+
+  it("rejects unsafe decimals, invalid ranges and limits before screening", () => {
+    for (const invalid of [
+      10,
+      "1e7",
+      " 10",
+      "NaN",
+      "Infinity",
+      "01",
+      "-1",
+      "0",
+    ])
+      expect(() =>
+        normalizeScreeningParameters({
+          ...DEFAULT_SCREENING_PARAMETERS,
+          minimumAdv20: { US: invalid, CN: "100000000" },
+        }),
+      ).toThrow();
+    for (const invalid of [
+      null,
+      [],
+      {},
+      { ...DEFAULT_SCREENING_PARAMETERS, minimumHistory: 1 },
+      { ...DEFAULT_SCREENING_PARAMETERS, minimumAdv20: { US: "1" } },
+      {
+        ...DEFAULT_SCREENING_PARAMETERS,
+        minimumAdv20: { US: "1", CN: "1", HK: "1" },
+      },
+      { ...DEFAULT_SCREENING_PARAMETERS, adrMinPct: "-0.01" },
+      { ...DEFAULT_SCREENING_PARAMETERS, adrMinPct: 2 },
+      { ...DEFAULT_SCREENING_PARAMETERS, adrMinPct: "16" },
+      { ...DEFAULT_SCREENING_PARAMETERS, adrMaxPct: "100.0000000000000001" },
+      ...[0, 31, 1.5, "3", NaN, Infinity].map((limitPerMarket) => ({
+        ...DEFAULT_SCREENING_PARAMETERS,
+        limitPerMarket,
+      })),
+    ])
+      expect(() => normalizeScreeningParameters(invalid)).toThrow();
+    expect(() =>
+      screenInstrument(instrument, rising(), {
+        parameters: { ...DEFAULT_SCREENING_PARAMETERS, adrMinPct: "16" },
+      }),
+    ).toThrow("INVALID_ADR_RANGE");
+  });
+
+  it("preserves the original defaults, indicator formulas and required history", () => {
+    const bars = rising();
+    const original = screenInstrument(instrument, bars);
+    expect(
+      screenInstrument(instrument, bars, {
+        parameters: DEFAULT_SCREENING_PARAMETERS,
+      }),
+    ).toEqual(original);
+    const relaxed = {
+      minimumAdv20: { US: "1", CN: "1" },
+      adrMinPct: "0",
+      adrMaxPct: "100",
+      limitPerMarket: 10,
+    };
+    expect(
+      screenInstrument(instrument, bars, { parameters: relaxed }).indicators,
+    ).toEqual(original.indicators);
+    expect(
+      screenInstrument(instrument, bars.slice(1), {
+        parameters: relaxed,
+        requiredHistory: 1,
+      }),
+    ).toMatchObject({ status: "UNKNOWN", reasons: ["INSUFFICIENT_HISTORY"] });
+    const flat = Array.from({ length: 250 }, (_, i) =>
+      bar("100", i, { turnover: "100000000" }),
+    );
+    expect(
+      screenInstrument(instrument, flat, { parameters: relaxed }).reasons,
+    ).toEqual(["EMA_ORDER_NOT_STRICT", "EMA21_NOT_RISING", "R30_NOT_POSITIVE"]);
+  });
+
+  it("uses exact inclusive thresholds and independent market liquidity limits", () => {
+    const bars = rising().map((b) => ({
+      ...b,
+      low: b.close,
+      high: new D(b.close).mul("1.03").toFixed(),
+    }));
+    const parameters = {
+      minimumAdv20: { US: "12000000", CN: "12000000.0000000000000001" },
+      adrMinPct: "3",
+      adrMaxPct: "3",
+      limitPerMarket: 30,
+    };
+    expect(screenInstrument(instrument, bars, { parameters }).status).toBe(
+      "PASS",
+    );
+    expect(
+      screenInstrument({ ...instrument, market: "CN", currency: "CNY" }, bars, {
+        parameters,
+      }).reasons,
+    ).toEqual(["LOW_LIQUIDITY"]);
+    expect(
+      screenInstrument(instrument, bars, {
+        parameters: {
+          ...parameters,
+          adrMinPct: "3.0000000000000001",
+          adrMaxPct: "4",
+        },
+      }).reasons,
+    ).toEqual(["ADR_OUTSIDE_RANGE"]);
+    expect(
+      screenInstrument(instrument, bars, {
+        parameters: {
+          ...parameters,
+          adrMinPct: "2",
+          adrMaxPct: "2.9999999999999999",
+        },
+      }).reasons,
+    ).toEqual(["ADR_OUTSIDE_RANGE"]);
+  });
+
+  it("retains over-cap rows and applies the confirmed cap separately per market", () => {
+    const base = screenInstrument(instrument, rising());
+    const candidates = (["US", "CN"] as const).flatMap((market) =>
+      Array.from({ length: 32 }, (_, i): Candidate => ({
+        ...base,
+        instrument: {
+          ...instrument,
+          market,
+          id: `${market}:${i.toString().padStart(2, "0")}`,
+        },
+      })),
+    );
+    for (const limitPerMarket of [1, 7, 30]) {
+      const parameters = normalizeScreeningParameters({
+        ...DEFAULT_SCREENING_PARAMETERS,
+        limitPerMarket,
+      });
+      const ranked = rankCandidates(candidates, parameters.limitPerMarket);
+      expect(ranked).toHaveLength(64);
+      for (const market of ["US", "CN"]) {
+        const rows = ranked.filter((row) => row.instrument.market === market);
+        expect(rows.filter((row) => row.rank !== null)).toHaveLength(
+          limitPerMarket,
+        );
+        expect(rows.at(limitPerMarket)?.reasons).toContain(
+          "BEYOND_MARKET_LIMIT",
+        );
+        expect(rows[0].instrument.id).toBe(`${market}:00`);
+      }
+    }
+    expect(
+      candidates.every((row) => row.rank === null && row.reasons.length === 0),
+    ).toBe(true);
   });
 });

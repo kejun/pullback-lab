@@ -8,18 +8,11 @@ import {
 } from "node:crypto";
 import { z, ZodError } from "zod";
 import Decimal from "decimal.js";
-import type {
-  Candidate,
-  Funds,
-  Plan,
-  PlanInput,
-} from "../../packages/contracts/index.js";
+import type { Funds, Plan, PlanInput } from "../../packages/contracts/index.js";
 import {
   avwap,
   calculateIndicators,
   ema,
-  rankCandidates,
-  screenInstrument,
 } from "../../packages/domain/indicators.js";
 import {
   demoInstruments,
@@ -29,6 +22,11 @@ import {
 import { ApiError, Store } from "./store.js";
 import { replayPlan } from "./replay.js";
 import { AttemptRuntime } from "./attempt-runtime.js";
+import { ScreeningService } from "./screening-service.js";
+import {
+  registerUniverseRoutes,
+  universeRevision,
+} from "./universe-service.js";
 import { registerPriceProposalRoutes } from "./price-proposal.js";
 import { auditDecisionInput } from "./audit-replay.js";
 import {
@@ -137,6 +135,7 @@ export async function createApp(
   app.decorate("store", store);
   const now = options.now ?? Date.now;
   const demo = options.demo === true;
+  const screening = new ScreeningService(store);
   const configured = Boolean(options.password && options.password.length >= 8);
   const savedSalt = store.setting("password_salt");
   const passwordSalt = savedSalt
@@ -282,11 +281,13 @@ export async function createApp(
         demo,
         capabilities: getUnknownCapabilities(),
         instruments: store.listInstruments().map((x) => x.instrument),
+        universeRevision: universeRevision(store),
         plans: store.plans(),
         funds: store.funds(),
         events: page.events,
         eventPage: page,
-        screeningConfirmed: store.setting("screening_confirmed") === "true",
+        screeningConfirmed: store.screeningSettings().current !== null,
+        screeningRules: store.screeningSettings(),
       };
     })(),
   );
@@ -294,33 +295,9 @@ export async function createApp(
     "/api/market/status",
     async () => options.marketStatus?.() ?? emptyMarketWorkerStatus(),
   );
-  app.get("/api/candidates", async () => {
-    const candidates: Candidate[] = store.listInstruments().map((row) => {
-      const bars = store.bars(row.instrument.id, "1D");
-      const synthetic =
-        bars.length > 0 && bars.every((bar) => bar.id.startsWith("synthetic:"));
-      const c = screenInstrument(row.instrument, bars, {
-        historyComplete: synthetic,
-        unadjusted: synthetic,
-        date: bars.length
-          ? new Date(bars.at(-1)!.time * 1000).toISOString().slice(0, 10)
-          : "",
-      });
-      if (!synthetic) {
-        c.status = row.manual ? "MANUAL" : "UNKNOWN";
-        c.reasons = ["真实行情与拆股口径尚未验证"];
-      } else if (store.setting("screening_confirmed") !== "true") {
-        c.status = "UNKNOWN";
-        c.reasons = ["请先确认 C 类工程筛选预设"];
-      }
-      return { ...c, tags: row.tags, note: row.note };
-    });
-    return {
-      candidates: rankCandidates(candidates),
-      coverage: candidates.filter((c) => c.indicators.screeningReady).length,
-      asOf: candidates.reduce((date, c) => (c.date > date ? c.date : date), ""),
-    };
-  });
+  app.get("/api/candidates", async () =>
+    screening.candidates(now(), options.marketStatus?.()),
+  );
   function command<T>(request: FastifyRequest, execute: () => T): T {
     const key = request.headers["idempotency-key"];
     if (!key) return execute();
@@ -362,67 +339,37 @@ export async function createApp(
       return result;
     });
   }
-  app.post("/api/universe", async (request) =>
+  registerUniverseRoutes(app, store, command);
+  app.get("/api/settings/screening", async () => store.screeningSettings());
+  app.post("/api/settings/screening", async (request) =>
     command(request, () => {
+      const legacy = z
+        .object({ confirmed: z.literal(true) })
+        .strict()
+        .safeParse(request.body);
+      if (legacy.success)
+        return store.confirmScreening(undefined, undefined, now());
       const input = z
         .object({
-          symbol: z
-            .string()
-            .min(1)
-            .max(32)
-            .regex(/^[A-Za-z0-9.\-]+$/),
-          market: z.enum(["US", "CN"]),
-          name: z.string().max(100).optional(),
+          confirmed: z.literal(true),
+          expectedVersion: integer,
+          parameters: z.unknown(),
         })
+        .strict()
         .parse(request.body);
-      const symbol = input.symbol.toUpperCase();
-      const id = `${input.market}:${symbol}`;
-      const existing = store
-        .listInstruments()
-        .find((x) => x.instrument.id === id);
-      if (existing) return existing.instrument;
-      if (store.listInstruments().length >= 100)
-        throw new ApiError(422, "UNIVERSE_LIMIT", "研究池最多 100 个明确标的");
-      const instrument = {
-        id,
-        symbol,
-        name: input.name ?? symbol,
-        market: input.market,
-        currency: input.market === "US" ? ("USD" as const) : ("CNY" as const),
-        tick: "0.01",
-        qMin: 1,
-        qStep: 1,
-        sellSameDay: false,
-        rulesVerified: false,
-      };
-      store.putInstrument({ instrument, tags: [], note: "", manual: true });
-      return instrument;
+      if (!Object.hasOwn(input, "parameters"))
+        throw new ApiError(
+          400,
+          "INVALID_SCREENING_PARAMETERS",
+          "请提供完整筛选参数",
+        );
+      return store.confirmScreening(
+        input.parameters as import("../../packages/contracts/screening.js").ScreeningParameters,
+        input.expectedVersion,
+        now(),
+      );
     }),
   );
-  app.patch<{ Params: { id: string } }>("/api/universe/:id", async (request) =>
-    command(request, () => {
-      const input = z
-        .object({
-          tags: z.array(z.string().max(40)).max(20),
-          note: z.string().max(4000),
-        })
-        .parse(request.body);
-      const row = store.instrument(request.params.id);
-      store.putInstrument({ ...row, ...input });
-      return { ok: true };
-    }),
-  );
-  app.delete<{ Params: { id: string } }>("/api/universe/:id", async (request) =>
-    command(request, () => {
-      store.deleteInstrument(request.params.id);
-      return { ok: true };
-    }),
-  );
-  app.post("/api/settings/screening", async (request) => {
-    z.object({ confirmed: z.literal(true) }).parse(request.body);
-    store.setSetting("screening_confirmed", "true");
-    return { ok: true };
-  });
   app.post("/api/demo/seed", async () => {
     if (!demo) throw new ApiError(404, "DEMO_DISABLED", "未启用合成演示模式");
     store.transaction(() => {
@@ -614,7 +561,7 @@ export async function createApp(
             "BACKGROUND_UNCONFIRMED",
             "请确认日线背景并填写关注理由",
           );
-        if (store.setting("screening_confirmed") !== "true")
+        if (!store.screeningSettings().current)
           throw new ApiError(
             422,
             "RULES_UNCONFIRMED",

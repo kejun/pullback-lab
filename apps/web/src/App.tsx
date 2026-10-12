@@ -12,7 +12,9 @@ import {
 import type {
   Bar,
   Bootstrap,
-  Candidate,
+  CandidateRow,
+  CandidatePage,
+  ScreeningSettings,
   Currency,
   DecisionEvent,
   DecisionEventSummary,
@@ -31,6 +33,10 @@ import { useEventFeed } from "./useEventFeed";
 import { SyntheticRuntime } from "./SyntheticRuntime";
 import { SupportEditor } from "./SupportEditor";
 import { MarketStatus } from "./MarketStatus";
+import { UniverseImport, ObservationEditor } from "./UniverseEditor";
+import type { UniverseSnapshot } from "../../../packages/contracts/universe";
+import { ScreeningRulesEditor } from "./ScreeningRulesEditor";
+import { DEFAULT_SCREENING_PARAMETERS } from "../../../packages/domain/screening-rules";
 import {
   DecisionEvidence,
   FeedbackHistory,
@@ -83,6 +89,12 @@ const EMPTY_BOOT: Bootstrap = {
     counts: { total: 0, unread: 0, pending: 0, taken: 0, skipped: 0 },
   },
   screeningConfirmed: false,
+  screeningRules: {
+    version: 0,
+    current: null,
+    defaultParameters: DEFAULT_SCREENING_PARAMETERS,
+  },
+  universeRevision: "",
 };
 const blankPlan = (instrumentId = ""): PlanInput => ({
   instrumentId,
@@ -123,6 +135,24 @@ const candidateState: Record<string, string> = {
   UNKNOWN: "数据待确认",
   MANUAL: "人工加入",
 };
+function healthReason(reason: string): string {
+  return (
+    (
+      {
+        MISSING_HISTORY: "尚无完成日线",
+        INSUFFICIENT_HISTORY: "完成日线数量不足",
+        HISTORY_NOT_VERIFIED: "历史来源尚未验证",
+        ADJUSTMENT_PROVENANCE_UNVERIFIED: "复权来源尚未验证",
+        SYNTHETIC_FIXTURE: "合成演练输入",
+        SYNTHETIC_DATA: "合成演练输入",
+        SYNTHETIC_FIXTURE_NOT_LIVE: "合成演练输入，非实时行情",
+        UNFINISHED_BARS_EXCLUDED: "已排除未完成日线",
+        FUTURE_INPUTS_EXCLUDED: "已排除未来输入",
+        SCREENING_RULES_UNCONFIRMED: "筛选参数尚未确认",
+      } as Record<string, string>
+    )[reason] ?? reason
+  );
+}
 const capabilityLabel: Record<string, string> = {
   UNKNOWN: "能力待验证",
   EOD_ONLY: "仅收盘研究",
@@ -338,9 +368,17 @@ export default function App() {
     demo: boolean;
   } | null>(null);
   const [boot, setBoot] = useState<Bootstrap>(EMPTY_BOOT);
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [candidates, setCandidates] = useState<CandidateRow[]>([]);
+  const [candidatePage, setCandidatePage] = useState<CandidatePage | null>(
+    null,
+  );
+  const [screeningSettings, setScreeningSettings] = useState<ScreeningSettings>(
+    EMPTY_BOOT.screeningRules,
+  );
+  const [candidateLoading, setCandidateLoading] = useState(false);
+  const [candidateError, setCandidateError] = useState<string | null>(null);
+  const [universe, setUniverse] = useState<UniverseSnapshot | null>(null);
   const [coverage, setCoverage] = useState(0);
-  const [asOf, setAsOf] = useState("");
   const eventFeed = useEventFeed(Boolean(session?.authenticated));
   const { events, counts: eventCounts, stream } = eventFeed;
   const [eventDetail, setEventDetail] = useState<DecisionEvent | null>(null);
@@ -361,9 +399,7 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [tagFilter, setTagFilter] = useState("");
   const [sort, setSort] = useState("rank");
-  const [addOpen, setAddOpen] = useState(false);
-  const [newSymbol, setNewSymbol] = useState("");
-  const [newName, setNewName] = useState("");
+  const [addOpen, setAddOpen] = useState<"single" | "batch" | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [plan, setPlan] = useState<PlanInput>(blankPlan());
   const [savedPlan, setSavedPlan] = useState<Plan | null>(null);
@@ -406,8 +442,6 @@ export default function App() {
   });
   const feedbackLoadSeq = useRef(0);
   const feedbackContext = useRef<string | null>(null);
-  const [tags, setTags] = useState("");
-  const [note, setNote] = useState("");
   const [eventFilter, setEventFilter] = useState("ALL");
   const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
   const [feedbackNote, setFeedbackNote] = useState("");
@@ -431,21 +465,60 @@ export default function App() {
   async function refresh(updateSelected = false) {
     const context = priceProposalContext.current;
     const requested = ++refreshSeq.current;
-    const [b, c] = await Promise.all([
-      api<Bootstrap>("/bootstrap"),
-      api<{ candidates: Candidate[]; coverage: number; asOf: string }>(
-        "/candidates",
-      ),
-    ]);
-    if (requested !== refreshSeq.current) return;
-    setBoot(b);
-    setCandidates(c.candidates);
-    setCoverage(c.coverage);
-    setAsOf(c.asOf);
-    eventFeed.acceptPage(b.eventPage);
-    if (updateSelected && context === priceProposalContext.current && savedPlan)
-      setSavedPlan(b.plans.find((row) => row.id === savedPlan.id) ?? savedPlan);
+    setCandidateLoading(true);
+    setCandidateError(null);
+    try {
+      let response: [Bootstrap, CandidatePage, UniverseSnapshot] | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const values = await Promise.all([
+          api<Bootstrap>("/bootstrap"),
+          api<CandidatePage>("/candidates"),
+          api<UniverseSnapshot>("/universe"),
+        ]);
+        if (requested !== refreshSeq.current) return;
+        const [bootstrap, page, list] = values;
+        if (
+          bootstrap.universeRevision === page.universeRevision &&
+          page.universeRevision === list.universeRevision &&
+          bootstrap.screeningRules.version === page.rules.version &&
+          bootstrap.screeningRules.current?.hash === page.rules.current?.hash
+        ) {
+          response = values;
+          break;
+        }
+      }
+      if (!response)
+        throw new Error(
+          "列表或筛选规则连续发生变更，未覆盖当前结果，请稍后刷新",
+        );
+      const [b, c, u] = response;
+      if (requested !== refreshSeq.current) return;
+      setBoot(b);
+      setCandidates(c.candidates);
+      setCandidatePage(c);
+      setScreeningSettings(b.screeningRules);
+      setUniverse(u);
+      setCoverage(c.coverage);
+      eventFeed.acceptPage(b.eventPage);
+      if (
+        updateSelected &&
+        context === priceProposalContext.current &&
+        savedPlan
+      )
+        setSavedPlan(
+          b.plans.find((row) => row.id === savedPlan.id) ?? savedPlan,
+        );
+    } catch (error) {
+      if (requested !== refreshSeq.current) return;
+      setCandidateError(
+        error instanceof Error ? error.message : "候选结果读取失败",
+      );
+      throw error;
+    } finally {
+      if (requested === refreshSeq.current) setCandidateLoading(false);
+    }
   }
+
   async function action(
     fn: () => Promise<void>,
     success?: string,
@@ -653,7 +726,7 @@ export default function App() {
           : "";
   const unread = eventCounts.unread;
   const activeCount = boot.plans.filter((p) =>
-    ["WAIT_RETEST", "ARMED", "ACTIVE"].includes(p.status),
+    ["WAIT_RETEST", "ARMED", "DATA_PAUSED", "TRIGGERED"].includes(p.status),
   ).length;
   const tagOptions = [...new Set(candidates.flatMap((c) => c.tags))];
   const visibleCandidates = useMemo(
@@ -662,7 +735,10 @@ export default function App() {
         .filter(
           (c) =>
             c.instrument.market === market &&
-            (filter === "ALL" || c.status === filter) &&
+            (filter === "ALL" ||
+              (filter === "MANUAL"
+                ? c.manual
+                : c.screeningStatus === filter)) &&
             (!tagFilter || c.tags.includes(tagFilter)) &&
             `${c.instrument.symbol} ${c.instrument.name} ${c.tags.join(" ")}`
               .toLowerCase()
@@ -724,9 +800,6 @@ export default function App() {
     setPlan(latest ? { ...latest } : blankPlan(id));
     setDirty(false);
     setRisk(null);
-    const c = candidates.find((c) => c.instrument.id === id);
-    setTags(c?.tags.join("，") || "");
-    setNote(c?.note || "");
     setPage("research");
   }
   function updatePlan<K extends keyof PlanInput>(key: K, value: PlanInput[K]) {
@@ -1361,10 +1434,20 @@ export default function App() {
                   </button>
                   <button
                     className="button primary"
-                    onClick={() => setAddOpen((o) => !o)}
+                    onClick={() =>
+                      setAddOpen((o) => (o === "single" ? null : "single"))
+                    }
                   >
                     <Icon name="plus" size={17} />
                     添加观察标的
+                  </button>
+                  <button
+                    className="button secondary"
+                    onClick={() =>
+                      setAddOpen((o) => (o === "batch" ? null : "batch"))
+                    }
+                  >
+                    批量导入
                   </button>
                 </div>
               </div>
@@ -1373,21 +1456,22 @@ export default function App() {
                   label="研究覆盖"
                   value={String(coverage)}
                   suffix="只"
-                  detail="有限股票池 · 上限 100 只"
+                  detail={`本地余量 ${universe?.limits.localResearchRemaining ?? "—"} · 上限 ${universe?.limits.researchMax ?? 100} 只`}
                 />
                 <Stat
                   label="筛选通过"
                   value={String(
-                    candidates.filter((c) => c.status === "PASS").length,
+                    candidates.filter((c) => c.screeningStatus === "PASS")
+                      .length,
                   )}
                   suffix="只"
                   detail="按各市场分别筛选与排序"
                 />
                 <Stat
-                  label="正在观察"
+                  label="观察名额占用"
                   value={String(activeCount)}
                   suffix="/ 10"
-                  detail="确认计划后开启后台观察"
+                  detail={`本地观察余量 ${Math.max(0, (universe?.limits.effectiveMonitoringMax ?? 10) - activeCount)} · 上限 10 只`}
                 />
                 <Stat
                   label="待阅读记录"
@@ -1416,63 +1500,48 @@ export default function App() {
                   );
                 })}
               </div>
-              {addOpen && (
-                <form
-                  className="add-panel"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void action(async () => {
-                      await api("/universe", "POST", {
-                        symbol: newSymbol.trim(),
-                        market,
-                        name: newName.trim() || undefined,
-                      });
-                      setNewSymbol("");
-                      setNewName("");
-                      setAddOpen(false);
-                      await refresh();
-                    }, "已加入人工观察列表。");
-                  }}
-                >
-                  <Field label="市场">
-                    <select
-                      value={market}
-                      onChange={(e) => setMarket(e.target.value as "US" | "CN")}
-                    >
-                      <option value="US">美股</option>
-                      <option value="CN">A 股</option>
-                    </select>
-                  </Field>
-                  <Field
-                    label="完整证券代码"
-                    help="包括交易所后缀，例如 AAPL.US 或 600519.SH"
-                  >
-                    <input
-                      value={newSymbol}
-                      onChange={(e) => setNewSymbol(e.target.value)}
-                      placeholder={market === "US" ? "AAPL.US" : "600519.SH"}
-                      required
-                    />
-                  </Field>
-                  <Field label="名称（可选）">
-                    <input
-                      value={newName}
-                      onChange={(e) => setNewName(e.target.value)}
-                      placeholder="便于辨认的名称"
-                    />
-                  </Field>
-                  <button className="button primary" disabled={busy}>
-                    加入观察
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label="取消添加"
-                    onClick={() => setAddOpen(false)}
-                  >
-                    <Icon name="close" />
-                  </button>
-                </form>
+              <div className="quota-note" aria-label="供应商额度">
+                <strong>
+                  供应商额度：
+                  {universe?.limits.provider.verified ? "已验证" : "未知"}
+                </strong>
+                <span>
+                  研究证券、同时订阅、每月唯一标的与请求速率均需权限证据核验；本地余量不等于供应商余额。
+                </span>
+              </div>
+              {candidatePage && (
+                <div className="sampling-status" aria-label="行情采样状态">
+                  <strong>
+                    {
+                      {
+                        DISABLED: "行情采样未启用",
+                        IDLE: "行情采样等待中",
+                        POLLING: "行情采样中",
+                        BACKOFF: "行情采样失败，等待重试",
+                        STOPPED: "行情采样已停止",
+                      }[candidatePage.workerHealth.state]
+                    }
+                  </strong>
+                  <span>{candidatePage.workerHealth.reason}</span>
+                  {candidatePage.workerHealth.state === "BACKOFF" && (
+                    <span>
+                      当前保留已取得的研究数据。
+                      {candidatePage.workerHealth.lastErrorCode
+                        ? `错误：${candidatePage.workerHealth.lastErrorCode}`
+                        : ""}
+                    </span>
+                  )}
+                </div>
+              )}
+              {addOpen && universe && (
+                <UniverseImport
+                  key={addOpen}
+                  mode={addOpen}
+                  initialMarket={market}
+                  universe={universe}
+                  onChanged={refresh}
+                  onClose={() => setAddOpen(null)}
+                />
               )}
               {!boot.screeningConfirmed && (
                 <div className="callout screening-notice">
@@ -1491,6 +1560,10 @@ export default function App() {
                       void action(async () => {
                         await api("/settings/screening", "POST", {
                           confirmed: true,
+                          expectedVersion: candidatePage?.rules.version ?? 0,
+                          parameters:
+                            candidatePage?.rules.current?.parameters ??
+                            candidatePage?.rules.defaultParameters,
                         });
                         await refresh();
                       }, "已确认当前筛选预设。")
@@ -1500,7 +1573,26 @@ export default function App() {
                   </button>
                 </div>
               )}
-              <section className="panel candidate-panel">
+              <section
+                className="panel candidate-panel"
+                aria-busy={candidateLoading}
+              >
+                <div
+                  className={`candidate-refresh-state ${candidateError ? "failed" : ""}`}
+                  role="status"
+                  aria-label="候选数据状态"
+                  aria-live="polite"
+                >
+                  {candidateError
+                    ? `刷新失败：${candidateError}。${candidatePage ? "已保留上次候选结果，请重试刷新。" : "尚无可用结果，请重试刷新。"}`
+                    : candidateLoading
+                      ? candidatePage
+                        ? "正在刷新，当前保留上次候选结果。"
+                        : "正在计算候选结果…"
+                      : candidatePage
+                        ? `${candidatePage.cacheHit ? "已读取缓存结果" : "已完成计算"} · 筛选规则第 ${candidatePage.rules.version} 版 · 计算于 ${when(candidatePage.computedAt)}`
+                        : "等待加载候选结果"}
+                </div>
                 <div className="panel-toolbar">
                   <div className="segmented" aria-label="候选市场">
                     <button
@@ -1590,7 +1682,8 @@ export default function App() {
                           <th>3 日涨幅</th>
                           <th>20 日日均成交额</th>
                           <th>ADR20</th>
-                          <th>研究状态</th>
+                          <th>算法结果 / 身份</th>
+                          <th>数据截止 / 健康</th>
                           <th />
                         </tr>
                       </thead>
@@ -1642,9 +1735,11 @@ export default function App() {
                               {compact(c.indicators.adv20)}
                               <small>
                                 {c.instrument.currency}
-                                {c.indicators.estimatedTurnover
+                                {c.turnoverBasis === "ESTIMATED"
                                   ? " · 估算"
-                                  : ""}
+                                  : c.turnoverBasis === "PROVIDER"
+                                    ? " · 实际成交额"
+                                    : " · 缺失"}
                               </small>
                             </td>
                             <td>
@@ -1655,17 +1750,37 @@ export default function App() {
                             <td>
                               <Badge
                                 tone={
-                                  c.status === "PASS"
+                                  c.screeningStatus === "PASS"
                                     ? "green"
-                                    : c.status === "UNKNOWN"
+                                    : c.screeningStatus === "UNKNOWN"
                                       ? "amber"
                                       : "neutral"
                                 }
                               >
-                                {candidateState[c.status]}
+                                {candidateState[c.screeningStatus]}
                               </Badge>
+                              {c.manual && (
+                                <div className="manual-identity">人工观察</div>
+                              )}
                               <div className="table-reason">
                                 {c.reasons[0] || "查看研究依据"}
+                              </div>
+                            </td>
+                            <td className="candidate-health-cell">
+                              <strong>
+                                {c.dataCutoff === null
+                                  ? "暂无完成日线"
+                                  : c.date}
+                              </strong>
+                              <small>
+                                {c.health.state === "SYNTHETIC"
+                                  ? "合成数据"
+                                  : c.health.state === "MISSING"
+                                    ? "缺少历史数据"
+                                    : "数据待核验"}
+                              </small>
+                              <div className="table-reason">
+                                {c.health.reasons.map(healthReason).join("；")}
                               </div>
                             </td>
                             <td>
@@ -1708,8 +1823,13 @@ export default function App() {
                 )}
                 <div className="panel-foot">
                   <span>
-                    数据截止：{asOf || "尚无可用数据"} ·{" "}
-                    {visibleCandidates.length} 只标的
+                    本页 {visibleCandidates.length} 只 · 各标的数据日期见表格
+                    {candidatePage && (
+                      <small>
+                        结果计算：{when(candidatePage.computedAt)} · 本次读取：
+                        {when(candidatePage.evaluatedAt)}
+                      </small>
+                    )}
                   </span>
                   <span>R30 → R3 → 紧密度 → 成交额 → 代码</span>
                 </div>
@@ -1868,10 +1988,16 @@ export default function App() {
                           <h3>研究依据</h3>
                           <Badge
                             tone={
-                              candidate?.status === "PASS" ? "green" : "amber"
+                              candidate?.screeningStatus === "PASS"
+                                ? "green"
+                                : "amber"
                             }
                           >
-                            {candidateState[candidate?.status || "UNKNOWN"]}
+                            {
+                              candidateState[
+                                candidate?.screeningStatus || "UNKNOWN"
+                              ]
+                            }
                           </Badge>
                         </div>
                         <div className="evidence-grid">
@@ -1911,78 +2037,28 @@ export default function App() {
                         <ul className="reason-list">
                           {(candidate?.reasons.length
                             ? candidate.reasons
-                            : candidate?.status === "PASS"
+                            : candidate?.screeningStatus === "PASS"
                               ? ["当前输入通过已确认的工程筛选条件。"]
                               : ["尚无足够数据，暂不判断筛选条件。"]
                           ).map((r) => (
                             <li key={r}>{r}</li>
                           ))}
                         </ul>
-                        <form
-                          className="observation-form"
-                          onSubmit={(e) => {
-                            e.preventDefault();
-                            void action(async () => {
-                              await api(`/universe/${instrument.id}`, "PATCH", {
-                                tags: tags
-                                  .split(/[,，]/)
-                                  .map((t) => t.trim())
-                                  .filter(Boolean),
-                                note,
-                              });
-                              await refresh();
-                            }, "主题标签和观察笔记已保存。");
-                          }}
-                        >
-                          <Field
-                            label="人工主题标签"
-                            help="逗号分隔；主题不参与自动质量判断"
-                          >
-                            <input
-                              value={tags}
-                              onChange={(e) => setTags(e.target.value)}
-                              placeholder="例如：半导体，关注财报"
-                            />
-                          </Field>
-                          <Field label="观察笔记">
-                            <textarea
-                              rows={2}
-                              value={note}
-                              onChange={(e) => setNote(e.target.value)}
-                              placeholder="记录值得关注的背景与尚待确认的事项"
-                            />
-                          </Field>
-                          <div className="form-buttons">
-                            <button
-                              className="button secondary compact"
-                              disabled={busy}
-                            >
-                              保存观察笔记
-                            </button>
-                            <button
-                              type="button"
-                              className="text-button danger-text"
-                              disabled={busy}
-                              onClick={() => {
-                                if (
-                                  window.confirm(
-                                    `将 ${instrument.symbol} 移出观察列表？历史计划和记录将保留。`,
-                                  )
-                                )
-                                  void action(async () => {
-                                    await api(
-                                      `/universe/${instrument.id}`,
-                                      "DELETE",
-                                    );
-                                    setSelectedId("");
-                                    await refresh();
-                                  }, "标的已移出观察列表。");
-                              }}
-                            >
-                              移出观察列表
-                            </button>
-                          </div>
-                        </form>
+                        {universe && (
+                          <ObservationEditor
+                            key={instrument.id}
+                            instrument={instrument}
+                            initialTags={candidate?.tags ?? []}
+                            initialNote={candidate?.note ?? ""}
+                            revision={universe.universeRevision}
+                            onChanged={refresh}
+                            onDeleted={() =>
+                              setSelectedId((current) =>
+                                current === instrument.id ? "" : current,
+                              )
+                            }
+                          />
+                        )}
                       </section>
                       {boot.plans.filter((p) => p.instrumentId === selectedId)
                         .length > 0 && (
@@ -2039,6 +2115,18 @@ export default function App() {
                               : "新计划"}
                           </Badge>
                         </div>
+                        <p
+                          className="plan-rule-version"
+                          aria-label="计划筛选规则版本"
+                        >
+                          {savedPlan
+                            ? savedPlan.screeningRuleSnapshot
+                              ? `此计划绑定筛选规则第 ${savedPlan.screeningRuleSnapshot.version} 版`
+                              : "此计划未记录筛选规则版本，不补用当前规则"
+                            : "新计划将在保存时记录当时的筛选规则"}{" "}
+                          · 当前候选使用第 {candidatePage?.rules.version ?? 0}{" "}
+                          版
+                        </p>
                         {conflictReview?.target.kind === "plan" && (
                           <ConflictPanel
                             review={conflictReview}
@@ -2898,7 +2986,7 @@ export default function App() {
                   <button
                     type="button"
                     className="icon-button"
-                    aria-label="关闭设置提示"
+                    aria-label="清除操作提示"
                     onClick={() => setNotice(null)}
                   >
                     <Icon name="close" size={16} />
@@ -2965,6 +3053,13 @@ export default function App() {
                   </button>
                 )}
               </section>
+              {candidatePage && (
+                <ScreeningRulesEditor
+                  initial={screeningSettings}
+                  onChanged={refresh}
+                  onSaved={setScreeningSettings}
+                />
+              )}
               <form onSubmit={saveFunds}>
                 <section className="settings-section">
                   <div className="section-heading">

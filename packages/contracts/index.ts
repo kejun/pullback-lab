@@ -1,3 +1,5 @@
+import type { ScreeningParameters, ScreeningRuleVersion } from "./screening.js";
+export type { ScreeningParameters, ScreeningRuleVersion } from "./screening.js";
 export type Market = "US" | "CN";
 export type Currency = "USD" | "CNY";
 export type Mode = "CLOSE_CONFIRM" | "INTRABAR_CROSS";
@@ -49,6 +51,60 @@ export interface Candidate {
   date: string;
   tags: string[];
   note: string;
+}
+export interface ScreeningSettings {
+  version: number;
+  current: ScreeningRuleVersion | null;
+  defaultParameters: ScreeningParameters;
+}
+export interface CandidateRow extends Candidate {
+  manual: boolean;
+  origin: "MANUAL" | "SYNTHETIC" | "IMPORTED";
+  screeningStatus: "PASS" | "FAIL" | "UNKNOWN";
+  /** Last completed bar used in the calculation, UTC seconds. */
+  dataCutoff: number | null;
+  /** Latest receipt time of the inputs used, UTC milliseconds. */
+  knownAt: number | null;
+  turnoverBasis: "PROVIDER" | "ESTIMATED" | "MISSING";
+  health: {
+    state: "SYNTHETIC" | "UNKNOWN" | "MISSING";
+    reasons: string[];
+    ignoredUnfinished: number;
+    ignoredFuture: number;
+  };
+}
+export interface CandidateMarketCoverage {
+  total: number;
+  manual: number;
+  ready: number;
+  passed: number;
+  failed: number;
+  unknown: number;
+  ranked: number;
+}
+export interface CandidatePage {
+  candidates: CandidateRow[];
+  coverage: number;
+  asOf: string;
+  rules: ScreeningSettings;
+  universeRevision: string;
+  /** UTC milliseconds at which this result was computed. */
+  computedAt: number;
+  /** Always the current request time, including cache hits. */
+  evaluatedAt: number;
+  cacheHit: boolean;
+  workerHealth: {
+    state: "DISABLED" | "IDLE" | "POLLING" | "BACKOFF" | "STOPPED";
+    reason: string;
+    source: string | null;
+    lastSuccessAt: number | null;
+    lastFailureAt: number | null;
+    lastErrorCode: string | null;
+    lastQuarantineReason: string | null;
+    providerQuotaVerified: false;
+    liveEligible: false;
+  };
+  marketCoverage: Record<Market, CandidateMarketCoverage>;
 }
 export interface Capability {
   market: Market;
@@ -128,6 +184,8 @@ export interface PlanInput {
   supportSelections?: SupportSelection[];
 }
 export interface Plan extends PlanInput {
+  /** Only newly created versions carry this immutable rule snapshot. */
+  screeningRuleSnapshot?: ScreeningRuleVersion | null;
   supportSnapshot?: SupportSnapshot;
   id: string;
   version: number;
@@ -239,4 +297,6 @@ export interface Bootstrap {
   events: DecisionEventSummary[];
   eventPage: EventPage;
   screeningConfirmed: boolean;
+  screeningRules: ScreeningSettings;
+  universeRevision: string;
 }

@@ -4,6 +4,11 @@ import type {
   Indicators,
   Instrument,
 } from "../contracts/index.js";
+import type { ScreeningParameters } from "../contracts/screening.js";
+import {
+  DEFAULT_SCREENING_PARAMETERS,
+  normalizeScreeningParameters,
+} from "./screening-rules.js";
 import {
   D,
   decimal,
@@ -31,6 +36,8 @@ export interface IndicatorOptions {
   date?: string;
   /** Only explicitly unadjusted data may use close/volume as raw turnover inputs. */
   unadjusted?: boolean;
+  /** User-confirmed thresholds; omitted calls retain the original test preset. */
+  parameters?: ScreeningParameters;
 }
 export const INDICATOR_VERSION =
   "screening-v1/decimal64/ema-sma-seed/atr-wilder";
@@ -241,7 +248,11 @@ export function screenInstrument(
   bars: readonly IndicatorBar[],
   options: IndicatorOptions = {},
 ): Candidate {
-  const completed = bars.filter((b) => b.final),
+  const parameters =
+      options.parameters !== undefined
+        ? normalizeScreeningParameters(options.parameters)
+        : DEFAULT_SCREENING_PARAMETERS,
+    completed = bars.filter((b) => b.final),
     indicators = calculateIndicators(bars, options),
     reasons: string[] = [];
   let unknown = false;
@@ -275,13 +286,12 @@ export function screenInstrument(
   }
   if (!unknown) {
     if (
-      decimal(indicators.adv20!).lt(
-        instrument.market === "US" ? "10000000" : "100000000",
-      )
+      decimal(indicators.adv20!).lt(parameters.minimumAdv20[instrument.market])
     )
       reasons.push("LOW_LIQUIDITY");
     const range = decimal(indicators.adr20!);
-    if (range.lt(2) || range.gt(15)) reasons.push("ADR_OUTSIDE_RANGE");
+    if (range.lt(parameters.adrMinPct) || range.gt(parameters.adrMaxPct))
+      reasons.push("ADR_OUTSIDE_RANGE");
     if (
       !decimal(indicators.ema9!).gt(indicators.ema21!) ||
       !decimal(indicators.ema21!).gt(indicators.ema50!)
