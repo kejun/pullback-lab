@@ -593,3 +593,108 @@ describe("server-owned daily evidence worker", () => {
     expect(ctx.worker.status().reason).toBe("RESEARCH_POOL_LIMIT");
   });
 });
+
+describe("worker external-operation deadlines", () => {
+  it("does not initialize the SDK if stopped before the deferred factory starts", async () => {
+    const factory = vi.fn(async () => fakeAdapter(async () => []));
+    const ctx = setup({ adapterFactory: factory });
+    const poll = ctx.worker.pollOnce();
+    await ctx.worker.stop();
+    await poll;
+    expect(factory).not.toHaveBeenCalled();
+    expect(ctx.worker.status()).toMatchObject({
+      state: "STOPPED",
+      requestCount: 0,
+    });
+  });
+  it("leaves POLLING on timeout, holds the single request lane, and discards late samples before retrying", async () => {
+    vi.useFakeTimers();
+    let complete!: (samples: ProviderBarSample[]) => void;
+    const fetch = vi
+      .fn<MarketDataAdapter["fetchBars"]>()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            complete = resolve;
+          }),
+      )
+      .mockResolvedValue([sample()]);
+    const ctx = setup({
+      adapterFactory: () => fakeAdapter(fetch),
+      requestTimeoutMs: 20,
+    });
+    const poll = ctx.worker.pollOnce();
+    await vi.advanceTimersByTimeAsync(20);
+    await poll;
+    expect(ctx.worker.status()).toMatchObject({
+      state: "BACKOFF",
+      lastErrorCode: "PROVIDER_REQUEST_TIMEOUT",
+      requestCount: 1,
+      sampleCount: 0,
+    });
+    ctx.advance(5000);
+    await ctx.worker.pollOnce();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(ctx.worker.status()).toMatchObject({
+      lastErrorCode: "PROVIDER_REQUEST_UNSETTLED",
+      requestCount: 1,
+    });
+    complete([sample()]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ctx.worker.status().sampleCount).toBe(0);
+    ctx.advance(10_000);
+    await ctx.worker.pollOnce();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(ctx.worker.status()).toMatchObject({
+      state: "IDLE",
+      requestCount: 2,
+      sampleCount: 1,
+    });
+    await ctx.worker.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("bounds hanging factory initialization and consumes late rejection after database close", async () => {
+    vi.useFakeTimers();
+    let reject!: (error: Error) => void;
+    const factory = vi.fn(
+      () =>
+        new Promise<MarketDataAdapter>((_, fail) => {
+          reject = fail;
+        }),
+    );
+    const ctx = setup({ adapterFactory: factory, requestTimeoutMs: 20 });
+    const poll = ctx.worker.pollOnce();
+    await vi.advanceTimersByTimeAsync(20);
+    await poll;
+    ctx.advance(5000);
+    await ctx.worker.pollOnce();
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(ctx.worker.status()).toMatchObject({
+      state: "BACKOFF",
+      requestCount: 0,
+      lastErrorCode: "PROVIDER_REQUEST_UNSETTLED",
+    });
+    await ctx.worker.stop();
+    ctx.db.close();
+    cleanup.pop();
+    reject(new Error("private native error"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("aborts a pending request wait on shutdown without waiting for its long deadline", async () => {
+    vi.useFakeTimers();
+    const ctx = setup({
+      adapterFactory: () => fakeAdapter(() => new Promise(() => {})),
+      requestTimeoutMs: 60_000,
+    });
+    const poll = ctx.worker.pollOnce();
+    await vi.advanceTimersByTimeAsync(0);
+    await ctx.worker.stop();
+    await poll;
+    expect(ctx.worker.status()).toMatchObject({
+      state: "STOPPED",
+      sampleCount: 0,
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});

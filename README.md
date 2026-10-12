@@ -55,8 +55,10 @@ SQLite 使用 WAL、`synchronous=FULL`、`BEGIN IMMEDIATE` 和事件唯一约束
 使用应用自己的只读 OpenAPI 凭据，不能复用聊天插件授权。配置 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN` 后，明确传入 1–2 只已授权证券：
 
 ```bash
-npm run probe -- --symbols AAPL.US --observe-seconds 30
+npm run probe -- --symbols AAPL.US --observe-seconds 30 --output probe-evidence.jsonl
 ```
+
+探针按证券分别采集日线、1/5 分钟、报价、静态资料与日历，并独立记录行情等级、套餐和可选的闭合推送。`--output` 创建新的私有 JSONL 文件，每一步追加并同步证据；不会覆盖旧报告。标准输出为最终 JSON。普通失败保留此前结果并继续独立步骤；请求超时后停止后续调用，避免堆积未结束请求。
 
 探针只使用 QuoteContext，不购买行情。退出码 `2` 表示能力仍未完成验证，`1` 表示探针失败。采样成功也不会自动开放实时提醒。SDK 5.2.0 的逐笔推送类型未提供包级序号，本地排序不能证明无丢包。
 
@@ -72,6 +74,7 @@ npm run probe -- --symbols AAPL.US --observe-seconds 30
 - [第四批实现与验证](docs/acceptance-v4.md)
 - [第五批实现与验证](docs/acceptance-v5.md)
 - [第六批实现与验证](docs/acceptance-v6.md)
+- [第七批实现与验证](docs/acceptance-v7.md)
 - [单主机私有部署](docs/deployment.md)
 - [私有部署与备份恢复](docs/operations.md)
 

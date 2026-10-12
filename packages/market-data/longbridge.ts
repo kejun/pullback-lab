@@ -10,6 +10,7 @@ import {
   type Candlestick,
 } from "longbridge";
 import type { Capability, Market } from "../contracts/index.js";
+import { withDeadline, OperationTimeout } from "./deadline.js";
 import { getUnknownCapabilities } from "./capabilities.js";
 export interface ProviderBarSample {
   symbol: string;
@@ -85,6 +86,7 @@ function sample(
 /** QuoteContext only: no account, balance, position, order or trading APIs. Raw samples do not imply production readiness. */
 export class LongbridgeReadOnlyAdapter implements MarketDataAdapter {
   readonly source = "longbridge-node-5.2.0";
+  private observing = false;
   private readonly cache = new Map<
     string,
     { at: number; bars: ProviderBarSample[] }
@@ -193,21 +195,30 @@ export class LongbridgeReadOnlyAdapter implements MarketDataAdapter {
       endAt: number;
     }>;
   }> {
-    const level = await this.ctx.quoteLevel();
-    const packages = await this.ctx.quotePackageDetails();
     return {
-      level,
-      packages: packages.map((x) => ({
-        key: x.key,
-        name: x.name,
-        startAt: x.startAt.getTime(),
-        endAt: x.endAt.getTime(),
-      })),
+      level: await this.quoteLevelEvidence(),
+      packages: await this.quotePackagesEvidence(),
     };
   }
-  async instrumentEvidence(
-    symbols: string[],
-  ): Promise<
+  async quoteLevelEvidence(): Promise<string> {
+    return this.ctx.quoteLevel();
+  }
+  async quotePackagesEvidence(): Promise<
+    Array<{
+      key: string;
+      name: string;
+      startAt: number;
+      endAt: number;
+    }>
+  > {
+    return (await this.ctx.quotePackageDetails()).map((x) => ({
+      key: x.key,
+      name: x.name,
+      startAt: x.startAt.getTime(),
+      endAt: x.endAt.getTime(),
+    }));
+  }
+  async instrumentEvidence(symbols: string[]): Promise<
     Array<{
       symbol: string;
       exchange: string;
@@ -249,57 +260,102 @@ export class LongbridgeReadOnlyAdapter implements MarketDataAdapter {
   async observeConfirmed(
     symbols: string[],
     durationMs: number,
+    requestTimeoutMs = 20_000,
   ): Promise<ProviderBarSample[]> {
     if (
+      !Number.isSafeInteger(durationMs) ||
       durationMs < 1000 ||
       durationMs > 120_000 ||
+      !Number.isSafeInteger(requestTimeoutMs) ||
+      requestTimeoutMs < 1 ||
+      requestTimeoutMs > 60_000 ||
       symbols.length < 1 ||
-      symbols.length > 2
+      symbols.length > 2 ||
+      new Set(symbols).size !== symbols.length
     )
       throw new Error("OBSERVATION_BOUNDS_INVALID");
     symbols.forEach(validateSymbol);
+    if (this.observing) throw new Error("OBSERVATION_ALREADY_RUNNING");
+    this.observing = true;
     const samples: ProviderBarSample[] = [];
+    let active = true;
     let callbackError = false;
-    this.ctx.setOnCandlestick((err, event) => {
-      if (err) {
-        callbackError = true;
-        return;
-      }
-      if (
-        symbols.includes(event.symbol) &&
-        event.data.period === Period.Min_1
-      ) {
-        try {
-          samples.push(
-            sample(
-              event.symbol,
-              "1m",
-              event.data.candlestick,
-              this.clock(),
-              event.data.isConfirmed,
-            ),
-          );
-        } catch {
-          callbackError = true;
-        }
-      }
-    });
-    const subscribed: string[] = [];
+    const attempted: string[] = [];
+    let failure: unknown;
+    let failed = false;
+    let cleanupFailed = false;
+    const unsubscribe = (symbol: string) =>
+      withDeadline(
+        () => this.ctx.unsubscribeCandlesticks(symbol, Period.Min_1),
+        requestTimeoutMs,
+      );
     try {
-      for (const s of symbols) {
-        await this.ctx.subscribeCandlesticks(
-          s,
-          Period.Min_1,
-          TradeSessions.Intraday,
-        );
-        subscribed.push(s);
+      this.ctx.setOnCandlestick((err, event) => {
+        if (!active) return;
+        if (err) {
+          callbackError = true;
+          return;
+        }
+        if (
+          symbols.includes(event.symbol) &&
+          event.data.period === Period.Min_1
+        ) {
+          try {
+            if (samples.length >= 2048)
+              throw new Error("OBSERVATION_SAMPLE_LIMIT");
+            samples.push(
+              sample(
+                event.symbol,
+                "1m",
+                event.data.candlestick,
+                this.clock(),
+                event.data.isConfirmed,
+              ),
+            );
+          } catch {
+            callbackError = true;
+          }
+        }
+      });
+      for (const symbol of symbols) {
+        // Even a failed subscription may have taken effect remotely.
+        attempted.push(symbol);
+        await withDeadline(() => {
+          const pending = this.ctx.subscribeCandlesticks(
+            symbol,
+            Period.Min_1,
+            TradeSessions.Intraday,
+          );
+          void pending.then(
+            () => {
+              // A late subscribe acknowledgement must not outlive cleanup silently.
+              if (!active) void unsubscribe(symbol).catch(() => {});
+            },
+            () => {},
+          );
+          return pending;
+        }, requestTimeoutMs);
       }
       await new Promise((resolve) => setTimeout(resolve, durationMs));
       if (callbackError) throw new Error("CANDLESTICK_STREAM_ERROR");
-      return samples;
+    } catch (error) {
+      failed = true;
+      failure = error;
     } finally {
-      for (const s of subscribed)
-        await this.ctx.unsubscribeCandlesticks(s, Period.Min_1);
+      active = false;
+      try {
+        this.ctx.setOnCandlestick(() => {});
+      } catch {
+        cleanupFailed = true;
+      }
+      const cleanup = await Promise.allSettled(attempted.map(unsubscribe));
+      cleanupFailed ||= cleanup.some((result) => result.status === "rejected");
+      // An unresolved/failed operation can still affect this native context. Do not reuse it for observation.
+      if (!cleanupFailed && !(failure instanceof OperationTimeout))
+        this.observing = false;
     }
+    if (failed) throw failure;
+    if (cleanupFailed) throw new Error("CANDLESTICK_CLEANUP_FAILED");
+    return samples;
   }
 }

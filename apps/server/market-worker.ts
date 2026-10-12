@@ -5,6 +5,10 @@ import type {
   MarketDataAdapter,
   ProviderBarSample,
 } from "../../packages/market-data/longbridge.js";
+import {
+  OperationTimeout,
+  withDeadline,
+} from "../../packages/market-data/deadline.js";
 import type { MarketSession } from "../../packages/market-data/calendar.js";
 import { BarRepository } from "../../packages/market-data/ingestion.js";
 import {
@@ -73,6 +77,7 @@ export interface MarketWorkerOptions {
   pollIntervalMs?: number;
   requestSpacingMs?: number;
   shutdownTimeoutMs?: number;
+  requestTimeoutMs?: number;
   verifySample?: (
     sample: ProviderBarSample,
     instrument: Instrument,
@@ -158,6 +163,9 @@ export class MarketWorker {
   private readonly interval: number;
   private readonly spacing: number;
   private readonly shutdownTimeout: number;
+  private readonly requestTimeout: number;
+  private readonly shutdown = new AbortController();
+  private providerPending = false;
   private current: MarketWorkerStatus;
   private adapter: MarketDataAdapter | null = null;
   private task: Promise<void> | null = null;
@@ -177,6 +185,7 @@ export class MarketWorker {
     );
     this.spacing = bounded(options.requestSpacingMs, 1000, 1000, 60_000);
     this.shutdownTimeout = bounded(options.shutdownTimeoutMs, 2000, 1, 5000);
+    this.requestTimeout = bounded(options.requestTimeoutMs, 20_000, 1, 60_000);
     options.db.exec(MARKET_WORKER_SCHEMA_SQL);
     this.repository = new BarRepository(options.db);
     const row = options.db
@@ -376,12 +385,44 @@ export class MarketWorker {
     this.save();
     return true;
   }
+  private async providerCall<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.providerPending)
+      throw new WorkerFailure("PROVIDER_REQUEST_UNSETTLED");
+    return withDeadline(
+      () => {
+        this.providerPending = true;
+        const pending = Promise.resolve().then(() => {
+          // stop() can run between pollOnce() returning and this microtask.
+          if (this.stopped) throw new WorkerFailure("WORKER_STOPPED");
+          return operation();
+        });
+        // Settlement releases only the request lane, never writes data or changes a stopped worker.
+        void pending.then(
+          () => {
+            this.providerPending = false;
+          },
+          () => {
+            this.providerPending = false;
+          },
+        );
+        return pending;
+      },
+      this.requestTimeout,
+      this.shutdown.signal,
+    );
+  }
   private async poll() {
     this.current.state = "POLLING";
     this.current.nextPollAt = null;
     try {
       this.save();
-      if (!this.adapter) this.adapter = await this.options.adapterFactory!();
+      // A deadline cannot cancel the SDK. Never pile retries on a still-pending call.
+      if (this.providerPending)
+        throw new WorkerFailure("PROVIDER_REQUEST_UNSETTLED");
+      if (!this.adapter)
+        this.adapter = await this.providerCall(async () =>
+          this.options.adapterFactory!(),
+        );
       if (this.stopped) return;
       this.current.source = this.adapter.source;
       const all = this.options.researchInstruments();
@@ -400,10 +441,12 @@ export class MarketWorker {
           .get(instrument.id);
         // Bootstrap research history once; later observations retain only a five-session correction overlap.
         // This is bounded sampling, not a claim that older history or intraday continuity is complete.
-        const samples = await this.adapter.fetchBars(
-          instrument.symbol,
-          "1D",
-          sampledBefore ? 5 : 300,
+        const samples = await this.providerCall(() =>
+          this.adapter!.fetchBars(
+            instrument.symbol,
+            "1D",
+            sampledBefore ? 5 : 300,
+          ),
         );
         if (this.stopped) return;
         if (samples.length > 1000)
@@ -431,7 +474,11 @@ export class MarketWorker {
       }
       this.current.lastFailureAt = this.now();
       this.current.lastErrorCode =
-        error instanceof WorkerFailure ? error.code : "PROVIDER_REQUEST_FAILED";
+        error instanceof OperationTimeout
+          ? "PROVIDER_REQUEST_TIMEOUT"
+          : error instanceof WorkerFailure
+            ? error.code
+            : "PROVIDER_REQUEST_FAILED";
       this.current.reason = this.current.lastErrorCode;
       this.current.consecutiveFailures++;
       this.current.state = "BACKOFF";
@@ -611,6 +658,7 @@ export class MarketWorker {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.shutdown.abort();
     this.automatic = false;
     if (this.timer) clearTimeout(this.timer);
     if (this.requestWait) {
