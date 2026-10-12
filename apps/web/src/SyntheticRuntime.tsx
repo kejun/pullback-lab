@@ -43,11 +43,13 @@ export function SyntheticRuntime({
   disabled,
   onChanged,
   onBusyChange,
+  onRuntimeRead,
 }: {
   plan: Plan;
   disabled: boolean;
   onChanged: () => Promise<void>;
   onBusyChange: (value: boolean) => void;
+  onRuntimeRead: (hasRuntime: boolean) => void;
 }) {
   const [runtime, setRuntime] = useState<RuntimeProgress | null>(null);
   const [loading, setLoading] = useState(false);
@@ -55,6 +57,9 @@ export function SyntheticRuntime({
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [reload, setReload] = useState(0);
+  const planPaused = ["PAUSED", "USER_PAUSED", "DATA_PAUSED"].includes(
+    plan.status,
+  );
   const active = useRef(true);
   const loadSequence = useRef(0);
   useEffect(() => {
@@ -66,14 +71,19 @@ export function SyntheticRuntime({
   useEffect(() => {
     const requested = ++loadSequence.current;
     let current = true;
+    const controller = new AbortController();
     setLoading(true);
     setError(null);
     api<{ runtime: RuntimeProgress | null }>(
       `/demo/plans/${encodeURIComponent(plan.id)}/runtime`,
+      "GET",
+      undefined,
+      { signal: controller.signal },
     )
       .then((result) => {
         if (!current || requested !== loadSequence.current) return;
         setRuntime(result.runtime);
+        onRuntimeRead(Boolean(result.runtime));
         setConflict(false);
       })
       .catch((cause: Error) => {
@@ -84,6 +94,7 @@ export function SyntheticRuntime({
       });
     return () => {
       current = false;
+      controller.abort();
     };
   }, [plan.id, plan.version, plan.attemptId, reload]);
 
@@ -102,8 +113,15 @@ export function SyntheticRuntime({
       }
     }
   }
-  async function command(kind: "start" | "step") {
-    if (!plan.attemptId || disabled || pending || loading || conflict) return;
+  async function command(kind: "start" | "step" | "recover") {
+    if (
+      (kind !== "recover" && !plan.attemptId) ||
+      disabled ||
+      pending ||
+      loading ||
+      conflict
+    )
+      return;
     setPending(true);
     onBusyChange(true);
     setError(null);
@@ -114,8 +132,14 @@ export function SyntheticRuntime({
         "POST",
         {
           expectedVersion: plan.version,
-          expectedAttemptId: plan.attemptId,
+          expectedAttemptId: plan.attemptId ?? null,
           ...(kind === "step" ? { expectedStep: runtime?.step, count: 1 } : {}),
+          ...(kind === "recover"
+            ? {
+                expectedStep: runtime?.step,
+                sourceAttemptId: runtime?.attemptId,
+              }
+            : {}),
         },
       );
       if (active.current && requested === loadSequence.current)
@@ -135,7 +159,26 @@ export function SyntheticRuntime({
   const canStart = Boolean(
     plan.attemptId && ["WAIT_RETEST", "ARMED"].includes(plan.status),
   );
-  const canStep = runtime && ["READY", "RUNNING"].includes(runtime.phase);
+  const runtimeMatches = runtime?.attemptId === plan.attemptId;
+  const canStep =
+    runtime &&
+    runtimeMatches &&
+    !planPaused &&
+    ["READY", "RUNNING"].includes(runtime.phase);
+  const canRecover =
+    runtime &&
+    (runtimeMatches || (plan.status === "DRAFT" && !plan.attemptId)) &&
+    (planPaused || plan.status === "DRAFT") &&
+    runtime.simulationTime < runtime.deadline &&
+    runtime.reason !== "HISTORICAL_ONLY" &&
+    ![
+      "ENTRY_TRIGGERED",
+      "TRIGGERED",
+      "TAKEN",
+      "SKIPPED",
+      "INVALID",
+      "EXPIRED",
+    ].includes(runtime.status);
   return (
     <section
       className="synthetic-runtime"
@@ -165,7 +208,9 @@ export function SyntheticRuntime({
       {runtime ? (
         <>
           <div className="section-heading">
-            <strong>{phaseLabels[runtime.phase]}</strong>
+            <strong>
+              {planPaused ? "本次观察已暂停" : phaseLabels[runtime.phase]}
+            </strong>
             <span>
               {runtime.step} / {runtime.totalSteps} 条
             </span>
@@ -176,11 +221,32 @@ export function SyntheticRuntime({
             max={runtime.totalSteps || 1}
           />
           <dl className="detail-list">
+            <dt>观察模板</dt>
+            <dd>
+              {runtime.template === "RECOVERY" ? "恢复尝试" : "会话首次观察"}
+            </dd>
+            <dt>当前尝试</dt>
+            <dd className="attempt-identity">{runtime.attemptId}</dd>
+            {runtime.recoveredFromAttemptId && (
+              <>
+                <dt>恢复自尝试</dt>
+                <dd className="attempt-identity">
+                  {runtime.recoveredFromAttemptId}
+                </dd>
+                <dt>恢复水位</dt>
+                <dd>{new Date(runtime.activatedAt).toISOString()}</dd>
+              </>
+            )}
             <dt>判断状态</dt>
             <dd>
               {runtime.reason === "HISTORICAL_ONLY"
                 ? "合成历史判断已完成"
-                : (stateLabels[runtime.status] ?? runtime.status)}
+                : planPaused
+                  ? "本次判断已暂停"
+                  : runtime.template === "RECOVERY" &&
+                      runtime.status === "WAIT_RETEST"
+                    ? "等待新的高于支撑区上沿与回踩"
+                    : (stateLabels[runtime.status] ?? runtime.status)}
             </dd>
             <dt>已记录输入</dt>
             <dd>{runtime.inputCount} 条（含时钟检查）</dd>
@@ -191,6 +257,11 @@ export function SyntheticRuntime({
                 : "无"}
             </dd>
           </dl>
+          {runtime.template === "RECOVERY" && (
+            <p>
+              这是从已保存水位之后开始的恢复尝试，不代表会话首次回踩。价格须重新高于支撑区上沿，再发生新的回踩。
+            </p>
+          )}
           {runtime.reason && (
             <p className="support-warning">{reasonText(runtime.reason)}</p>
           )}
@@ -199,6 +270,23 @@ export function SyntheticRuntime({
               已保存 {runtime.eventTypes.length}{" "}
               条事件，可在「提醒与记录」查看。
             </small>
+          )}
+          {canRecover && (
+            <div className="recovery-action">
+              <p>
+                从版本 {runtime.planVersion} 的已保存水位继续，使用当前版本{" "}
+                {plan.version}
+                。系统保留原尝试，新建恢复尝试；需重新观察价格高于支撑区上沿，再等待新的回踩。
+              </p>
+              <button
+                type="button"
+                className="button primary full"
+                disabled={disabled || pending || loading || conflict}
+                onClick={() => void command("recover")}
+              >
+                新建恢复尝试
+              </button>
+            </div>
           )}
           {canStep ? (
             <button
@@ -213,7 +301,11 @@ export function SyntheticRuntime({
             <small>
               {runtime.phase === "COMPLETE"
                 ? "合成序列已处理完毕，不代表真实成交。"
-                : "本次演练已暂停。核对计划与资金后，可显式启用新的观察尝试。"}
+                : canRecover
+                  ? "核对计划与资金后，使用上方按钮新建恢复尝试。"
+                  : !runtimeMatches
+                    ? "观察尝试已变化，请读取最新演练进度后核对。"
+                    : "本次演练已暂停或结束。旧序列不会从开盘重复执行。"}
             </small>
           )}
         </>

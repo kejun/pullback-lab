@@ -3256,3 +3256,11 @@ details > summary {
 .synthetic-runtime .detail-list {
   margin: 0;
 }
+
+.attempt-identity {
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+.recovery-action {
+  margin-block: 12px;
+}

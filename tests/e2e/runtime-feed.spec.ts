@@ -78,6 +78,7 @@ test("persisted synthetic steps stream summaries and preserve a feedback draft o
   const plan = (await created.json()) as Plan;
   const activated = await post(`/plans/${plan.id}/activate`, {
     expectedVersion: plan.version,
+    expectedAttemptId: plan.attemptId ?? null,
   });
   expect(activated.status()).toBe(200);
   const activePlan = (await activated.json()).plan as Plan;
