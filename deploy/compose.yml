@@ -1,0 +1,69 @@
+name: pullback-lab
+
+services:
+  app:
+    image: pullback-lab:local
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    # SQLite and process recovery support one application instance only.
+    container_name: pullback-lab-app
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file:
+      - path: ${PULLBACK_ENV_FILE:-./pullback.env}
+        required: true
+        format: raw
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3000"
+      PULLBACK_DB: ${PULLBACK_DB:-/app/data/pullback.sqlite}
+      PULLBACK_ORIGIN: ${PULLBACK_ORIGIN:?Export the public HTTPS origin before running Compose}
+    expose:
+      - "3000"
+    volumes:
+      - pullback-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      PULLBACK_ORIGIN: ${PULLBACK_ORIGIN:?Export the public HTTPS origin before running Compose}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  # Local Docker volumes only: do not replace with NFS/network-backed storage.
+  pullback-data:
+  caddy-data:
+  caddy-config:

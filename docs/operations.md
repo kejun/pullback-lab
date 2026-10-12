@@ -8,28 +8,31 @@
 | -------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | `PULLBACK_PASSWORD`                                                        | 至少 8 位的访问密码；建议使用随机长密码                       |
 | `PULLBACK_DB`                                                              | 数据库路径，默认 `data/pullback.sqlite`                       |
+| `PULLBACK_BACKUP_DIR`                                                      | 迁移前备份目录，默认主数据库同目录的 `backups` 子目录         |
 | `HOST` / `PORT`                                                            | 默认 `127.0.0.1:3000`                                         |
 | `PULLBACK_ORIGIN`                                                          | HTTPS 反向代理的完整来源，例如 `https://research.example.com` |
 | `NODE_ENV=production`                                                      | 开启 Secure 会话 Cookie，必须通过 HTTPS 访问                  |
 | `PULLBACK_DEMO=1`                                                          | 显式开放合成样本与历史回放，默认关闭                          |
-| `PULLBACK_RESTORED=1`                                                      | 恢复备份后首次启动，废止旧会话和资金确认；完成后移除          |
+| `PULLBACK_RESTORED=1`                                                      | 兼容人工复制恢复：首次启动失效旧状态后移除；新 restore 命令不需要 |
 | `PULLBACK_MARKET_WORKER=1`                                                 | 显式启用日线证据采样，默认关闭；仍需下列三项凭据              |
 | `LONGBRIDGE_APP_KEY` / `LONGBRIDGE_APP_SECRET` / `LONGBRIDGE_ACCESS_TOKEN` | 应用自己的只读行情凭据，不能复用聊天插件授权                  |
 
 构建后运行 `npm start`。`GET /api/health` 提供服务健康状态，`dataReady:false` 明确表示真实监测尚未验收。公网部署应由 HTTPS 代理提供 TLS，代理保持 `/api/events/stream` 不缓冲；应用端口只对代理可见。不要直接暴露无 TLS 的服务端口。
 
-仓库提供 Dockerfile，但部署目标、域名、TLS、持久卷和真实主机恢复演练需要在选定环境中验收，不能由本地构建替代。
+生产启动会在打开数据库前检查密码、HTTPS 来源、端口、监听地址、开关和页面构建；配置不合格时不会取得数据库锁或使资金状态失效。仓库提供 Dockerfile、单实例 Compose 与 Caddy 配置，完整步骤见[单主机私有部署](deployment.md)。部署目标、域名、TLS、持久卷和真实主机恢复演练需要在选定环境中验收。
 
 ```bash
 docker build -t pullback-lab .
 docker volume create pullback-data
-docker run --rm --name pullback-lab \
+docker run --restart unless-stopped --name pullback-lab \
   --env-file /absolute/private/path/pullback.env \
   -p 127.0.0.1:3000:3000 \
   -v pullback-data:/app/data pullback-lab
 ```
 
 私有环境文件仅存主机，不纳入 Git。生产密码轮换会使旧会话失效。程序日志不输出密码或行情凭据。
+
+登录后的设置抽屉提供运行状态与脱敏 JSON 下载；接口为 `GET /api/operations/status`。报告只包括运行环境、数据库与磁盘状态、资金确认代际、计划和提醒数量、采样状态与时间，不含资金金额、标的、笔记、路径、密码或原始供应商错误。报告读取不改变数据库。刷新失败保留旧报告及其采集时间；下载仍对应该次采集。公网 TLS、时钟同步和真实 US/CN 能力尚未实测时均为 UNKNOWN，不能用 Secure Cookie 配置或采样成功替代验证。
 
 ## 启动、迁移和进程锁
 
@@ -38,6 +41,8 @@ docker run --rm --name pullback-lab \
 启动检查实际加载的 SQLite 版本。目前允许 3.51.3、后续 3.51 修复版本、3.53 及以上稳定版本，以及官方修复回移版本 3.44.6、3.50.7；拒绝已撤回的 3.52 分支。依据为 [SQLite WAL-reset 修复说明](https://sqlite.org/wal.html#walresetbug)及[官方版本记录](https://sqlite.org/changes.html)。依赖包版本不能替代运行库检查。
 
 数据库版本 1 的现有记录会保留。所有待执行迁移和版本标记在同一事务中提交；任意步骤失败则整体回滚。版本 2 保护计划版本、资金快照、判断输入、事件和反馈修订，版本 3 建立行情接收及采样状态表，版本 4 建立分步运行输入、冻结配置、检查点和提醒变更流，版本 5 建立不可变筛选规则版本。旧筛选确认标志仅转为默认参数版本，确认时间保留未知；旧计划和判断归档不回填。历史表禁止 UPDATE、DELETE 和替换同一事实。旧计划没有支撑快照时仍可读取，但必须明确选择支撑并保存新版本后才能启用。
+
+主进程持有服务锁后，先只读检查现有 schema，再对需要升级的数据库生成唯一的迁移前备份；完整性、外键和应用表结构均通过后才打开 Store 迁移。备份目录不可写、旧库不完整或版本超出程序支持范围时停止启动。不存在的新库与当前 schema 不生成重复升级备份；已有空文件或非应用库被拒绝。升级前备份保留旧 schema，不会先迁移源库再备份；目录内的 `pullback-schema-版本-时间-唯一编号.sqlite` 应按主机策略另行保管，不自动删除历史备份。
 
 ## 日线证据采样
 
@@ -61,14 +66,31 @@ docker run --rm --name pullback-lab \
 PULLBACK_DB=data/pullback.sqlite npm run backup -- /absolute/private/path/backup-2026-10-12.sqlite
 ```
 
-脚本在备份后执行 `PRAGMA integrity_check`。备份包含人工资金和研究记录，应使用与主数据库相同的访问权限，保留在独立持久介质。账户密码环境文件和行情密钥不在数据库备份中。
+脚本先验证应用 schema、`integrity_check` 和外键，使用同目录 0600 临时文件生成完整快照；关闭暂存 WAL、再次检查并同步文件后，通过无覆盖的原子文件链接发布，最后同步目录。失败清理暂存文件，不覆盖现有数据库或日志。源和目标不能使用同一主库、WAL、SHM、journal 或进程锁侧车路径；源硬链接别名也会拒绝。禁止把目标命名为源库的 `-wal` 等侧车文件。备份期间保留一致读取快照，未提交的写入不会进入备份。
+
+备份包含人工资金、研究记录及认证摘要，应保留在独立私有持久介质；完整备份不是可公开分享的诊断报告。账户密码环境文件和行情密钥不在数据库备份中。备份不会自动压缩、上传或删除旧文件，也不能代替主机断电耐久性验收。
 
 ## 恢复顺序
 
-1. 停止全部访问该数据库的应用进程，保留原数据目录作为故障排查副本。
-2. 检查备份完整性，复制到一个新的空数据目录。不要把新主库文件与旧 `-wal`、`-shm` 文件混用。
-3. 将 `PULLBACK_DB` 指向恢复后的文件，并设置 `PULLBACK_RESTORED=1` 启动一次。
-4. 重新登录并核对计划、记录和预留。资金快照需要重新确认。未完成观察必须建立新的尝试和数据证据，不能补发旧实时提醒。
-5. 停止服务，移除 `PULLBACK_RESTORED`，再正常启动。每次进程重启仍需要安全恢复检查。
+1. 停止应用进程，保留原数据库和日志；选择尚不存在的新数据库路径。
+2. 运行恢复命令，源数据库保持只读。命令持有目标服务锁，拒绝已有目标及旧 WAL/SHM；只在暂存副本上升级和失效旧运行状态。
+
+```bash
+npm run restore -- /absolute/private/path/backup.sqlite /absolute/private/path/restored/pullback.sqlite
+```
+
+3. 将 `PULLBACK_DB` 指向恢复后的新文件，再正常启动。新命令已清除旧会话与幂等命令结果、轮转提醒游标代际、追加资金待确认代际并暂停未完成计划，不需要 `PULLBACK_RESTORED=1`。
+4. 重新登录，核对计划、记录和预留并确认资金。未完成观察必须建立新的尝试与数据证据，不能补发旧实时提醒。原历史计划、事件、输入和反馈不会被改写，待反馈与已交易待确认的占用保留。
+
+使用 Compose 时，以下示例从现有数据卷内的备份恢复到不同文件。`dc` 定义与公开来源配置见部署说明：
+
+```bash
+dc stop app
+dc run --rm --no-deps app npm run restore -- /app/data/backups/backup.sqlite /app/data/restored.sqlite
+export PULLBACK_DB=/app/data/restored.sqlite
+dc up -d --force-recreate --wait --wait-timeout 120 app
+```
+
+把示例文件名替换为实际新路径，并记录 `PULLBACK_DB` 供后续管理终端使用。如果备份在主机外部目录，可使用明确的只读挂载传入 one-off 恢复容器。不要删除旧主库或拼接旧 WAL。历史手动复制流程仍可用 `PULLBACK_RESTORED=1` 进行首次安全启动，但新恢复命令不依赖操作者记住这一开关。失败时可能保留已释放的 `.service-lock.sqlite` 文件；不能靠删除锁文件解决占用。
 
 已触发但尚未反馈的事件会保留其占用，不能因重启或时间到期自动释放。填写“已交易”会使资金快照过期，用户须以已反映该交易的余额重新确认；“已跳过”只能释放一次。恢复后的历史事实和反馈修订保留，不伪装为新的实时事件。

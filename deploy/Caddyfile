@@ -1,0 +1,5 @@
+{$PULLBACK_ORIGIN} {
+	# Caddy flushes text/event-stream responses immediately by default.
+	# Do not add response_buffers or compression to the event-stream route.
+	reverse_proxy app:3000
+}

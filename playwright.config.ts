@@ -2,7 +2,13 @@ import { defineConfig } from "@playwright/test";
 
 // Each scenario has its own service and temporary SQLite database. A chart-only
 // test must not pre-confirm settings or seed plans for the research acceptance flow.
-const scenarios = ["research", "chart", "runtime-feed", "candidates"] as const;
+const scenarios = [
+  "research",
+  "chart",
+  "runtime-feed",
+  "candidates",
+  "operations",
+] as const;
 
 export default defineConfig({
   testDir: "./tests/e2e",
