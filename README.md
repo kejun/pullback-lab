@@ -46,6 +46,8 @@ SQLite 使用 WAL、`synchronous=FULL`、`BEGIN IMMEDIATE` 和事件唯一约束
 
 候选页支持单个或 CSV 批量加入人工观察列表，原子校验最多 100 只研究标的；标签和笔记用版本校验防止并发覆盖。设置页可确认并保存 ADV、ADR 和每市场排名上限的新规则版本，旧计划与回放保留原依据。人工身份与筛选结论分开展示；数据截止、缺失原因、成交额来源和供应商配额未知状态均可查看。
 
+设置页可读取并下载脱敏运行报告。生产启动先检查密码、HTTPS 来源及前端构建，旧数据库迁移前自动备份；`npm run backup` 生成一致快照，`npm run restore -- BACKUP_PATH NEW_DATABASE_PATH` 恢复到新文件并失效旧会话、资金确认与旧命令。单主机 Compose 与 Caddy 配置见部署说明。
+
 ## 行情探针
 
 使用应用自己的只读 OpenAPI 凭据，不能复用聊天插件授权。配置 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN` 后，明确传入 1–2 只已授权证券：
@@ -66,6 +68,8 @@ npm run probe -- --symbols AAPL.US --observe-seconds 30
 - [第二批实现与验证](docs/acceptance-v2.md)
 - [第三批实现与验证](docs/acceptance-v3.md)
 - [第四批实现与验证](docs/acceptance-v4.md)
+- [第五批实现与验证](docs/acceptance-v5.md)
+- [单主机私有部署](docs/deployment.md)
 - [私有部署与备份恢复](docs/operations.md)
 
 Linear 项目：<https://linear.app/kejunz/project/pullback-lab-回调交易研究-018616dd62c7>。

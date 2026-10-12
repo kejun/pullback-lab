@@ -27,6 +27,7 @@
 - GET /api/events/:id/input → 归档判断输入
 - GET /api/events/:id/replay → {status:'MATCH'|'MISMATCH'|'UNSUPPORTED',checks,reasons,original,replayed,inputHash,algorithmVersion,coverage}；校验原始 JSON 哈希后重放，不写入记录、通知或资金
 - GET /api/market/status → MarketWorkerStatus；采样状态与水位独立于实时能力，liveEligible=false
+- GET /api/operations/status → OperationsStatus；需登录，白名单脱敏且只读。包含运行库/schema、文件系统容量、资金确认代际、计划/预留/未读及待反馈数量、采样状态；不包含资金金额、标的、路径、凭据或原始错误。市场能力、时钟与公网 TLS 未实测均为 UNKNOWN
 - GET /api/demo/plans/:id/runtime → {runtime:RuntimeProgress|null}（仅演示模式）
 - POST /api/demo/plans/:id/runtime/start {expectedVersion,expectedAttemptId} → {runtime:RuntimeProgress}；只准备服务端合成序列
 - POST /api/demo/plans/:id/runtime/step {expectedVersion,expectedAttemptId,expectedStep,count?:1..20} → {runtime:RuntimeProgress}；逐输入原子提交，进度冲突返回 409；不接受客户端行情或门控结论
