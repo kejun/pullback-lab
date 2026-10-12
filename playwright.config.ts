@@ -21,13 +21,12 @@ export default defineConfig({
       : undefined,
   },
   webServer: {
-    command: "npm start",
+    command: "node --import tsx scripts/e2e-server.ts",
     url: "http://127.0.0.1:4180/api/health",
     reuseExistingServer: false,
     env: {
       PORT: "4180",
       HOST: "127.0.0.1",
-      PULLBACK_DB: ":memory:",
       PULLBACK_PASSWORD: "e2e-only-password",
       PULLBACK_DEMO: "1",
       NODE_ENV: "test",

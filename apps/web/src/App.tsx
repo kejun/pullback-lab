@@ -1,5 +1,8 @@
 import {
   useEffect,
+  useId,
+  cloneElement,
+  isValidElement,
   useMemo,
   useRef,
   useState,
@@ -13,6 +16,8 @@ import type {
   Currency,
   DecisionEvent,
   Funds,
+  FeedbackRevision,
+  SupportSnapshot,
   Instrument,
   Plan,
   PlanInput,
@@ -20,6 +25,13 @@ import type {
 } from "../../../packages/contracts/index";
 import { api, ApiError } from "./api";
 import ResearchChart from "./ResearchChart";
+import { SupportEditor } from "./SupportEditor";
+import { MarketStatus } from "./MarketStatus";
+import {
+  DecisionEvidence,
+  FeedbackHistory,
+  EventReplay,
+} from "./EventEvidence";
 
 type Page = "candidates" | "research" | "events";
 type Period = "1D" | "1m" | "5m";
@@ -73,6 +85,7 @@ const blankPlan = (instrumentId = ""): PlanInput => ({
   }),
   reason: "",
   backgroundConfirmed: false,
+  supportSelections: [],
 });
 const planState: Record<string, string> = {
   DRAFT: "草稿",
@@ -265,12 +278,26 @@ function Field({
   help?: string;
   children: ReactNode;
 }) {
+  const generatedId = useId();
+  const control = isValidElement<{ id?: string; "aria-describedby"?: string }>(
+    children,
+  )
+    ? children
+    : null;
+  const id = control?.props.id ?? generatedId;
+  const helpId = `${generatedId}-help`;
+  const describedBy =
+    [control?.props["aria-describedby"], help ? helpId : undefined]
+      .filter(Boolean)
+      .join(" ") || undefined;
   return (
-    <label className="field">
-      <span>{label}</span>
-      {children}
-      {help && <small>{help}</small>}
-    </label>
+    <div className="field">
+      <label htmlFor={id}>{label}</label>
+      {control
+        ? cloneElement(control, { id, "aria-describedby": describedBy })
+        : children}
+      {help && <small id={helpId}>{help}</small>}
+    </div>
   );
 }
 function Badge({
@@ -340,6 +367,40 @@ export default function App() {
   const [chart, setChart] = useState<ChartData>(EMPTY_CHART);
   const [chartLoading, setChartLoading] = useState(false);
   const [risk, setRisk] = useState<RiskResult | null>(null);
+  const [supportResult, setSupportResult] = useState<{
+    key: string;
+    snapshot: SupportSnapshot | null;
+    error: string | null;
+  } | null>(null);
+  const supportKey = JSON.stringify({
+    instrumentId: selectedId,
+    anchorTime: plan.anchorTime,
+    primarySupport: plan.primarySupport,
+    supportSelections: plan.supportSelections ?? [],
+    ...(plan.sessionDate ? { sessionDate: plan.sessionDate } : {}),
+  });
+  const supportPreview =
+    supportResult?.key === supportKey ? supportResult.snapshot : null;
+  const supportLoading = Boolean(
+    selectedId && plan.primarySupport && supportResult?.key !== supportKey,
+  );
+  const [feedbackHistory, setFeedbackHistory] = useState<FeedbackRevision[]>(
+    [],
+  );
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const [feedbackConflict, setFeedbackConflict] = useState<{
+    eventId: string;
+    loaded: boolean;
+  } | null>(null);
+  const feedbackTouched = useRef({
+    note: false,
+    price: false,
+    quantity: false,
+    time: false,
+  });
+  const feedbackLoadSeq = useRef(0);
+  const feedbackContext = useRef<string | null>(null);
   const [tags, setTags] = useState("");
   const [note, setNote] = useState("");
   const [eventFilter, setEventFilter] = useState("ALL");
@@ -360,7 +421,9 @@ export default function App() {
   const planEditSeq = useRef(0);
   const researchContext = useRef("");
   researchContext.current = `${selectedId}:${savedPlan?.id || "new"}`;
+  const refreshSeq = useRef(0);
   async function refresh() {
+    const requested = ++refreshSeq.current;
     const [b, c, e] = await Promise.all([
       api<Bootstrap>("/bootstrap"),
       api<{ candidates: Candidate[]; coverage: number; asOf: string }>(
@@ -368,6 +431,7 @@ export default function App() {
       ),
       api<{ events: DecisionEvent[] }>("/events"),
     ]);
+    if (requested !== refreshSeq.current) return;
     setBoot(b);
     setCandidates(c.candidates);
     setCoverage(c.coverage);
@@ -503,6 +567,33 @@ export default function App() {
     };
   }, [selectedId, period, plan.anchorTime, candidates]);
   useEffect(() => {
+    if (!selectedId || !plan.primarySupport) return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      api<SupportSnapshot>(
+        "/plans/support-preview",
+        "POST",
+        JSON.parse(supportKey),
+      )
+        .then((snapshot) => {
+          if (active)
+            setSupportResult({ key: supportKey, snapshot, error: null });
+        })
+        .catch((e: Error) => {
+          if (active)
+            setSupportResult({
+              key: supportKey,
+              snapshot: null,
+              error: e.message,
+            });
+        });
+    }, 180);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [supportKey, selectedId, plan.primarySupport]);
+  useEffect(() => {
     if (!settings) return;
     const previous = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -611,6 +702,15 @@ export default function App() {
       entryMax: "101.50",
       reason: "合成示例：确认价格从支撑区上方回踩，观察之后的首次突破。",
       backgroundConfirmed: false,
+      supportSelections: [
+        { source: "EMA9" },
+        {
+          source: "HORIZONTAL",
+          id: "demo-level-100",
+          label: "合成水平支撑",
+          price: "100",
+        },
+      ],
     }));
     setDirty(true);
     setRisk(null);
@@ -772,12 +872,75 @@ export default function App() {
       { kind: "funds", generation: fundsGeneration },
     );
   }
+  async function loadFeedback(id: string, prefill: boolean) {
+    const requested = ++feedbackLoadSeq.current;
+    setFeedbackLoading(true);
+    setFeedbackError(null);
+    try {
+      const result = await api<{ revisions: FeedbackRevision[] }>(
+        `/events/${id}/feedback`,
+      );
+      if (
+        feedbackContext.current !== id ||
+        requested !== feedbackLoadSeq.current
+      )
+        return false;
+      setFeedbackHistory(result.revisions);
+      const latest = result.revisions.at(-1);
+      if (prefill && latest) {
+        if (!feedbackTouched.current.note) setFeedbackNote(latest.note);
+        if (!feedbackTouched.current.price)
+          setActualPrice(latest.actualPrice ?? "");
+        if (!feedbackTouched.current.quantity)
+          setActualQuantity(
+            latest.actualQuantity == null ? "" : String(latest.actualQuantity),
+          );
+        if (!feedbackTouched.current.time)
+          setActualTime(
+            latest.actualTime == null
+              ? ""
+              : new Date(
+                  latest.actualTime -
+                    new Date(latest.actualTime).getTimezoneOffset() * 60000,
+                )
+                  .toISOString()
+                  .slice(0, 23),
+          );
+      }
+      return true;
+    } catch (e) {
+      if (
+        feedbackContext.current === id &&
+        requested === feedbackLoadSeq.current
+      )
+        setFeedbackError(
+          e instanceof Error ? e.message : "修订历史暂时无法读取。",
+        );
+      return false;
+    } finally {
+      if (
+        feedbackContext.current === id &&
+        requested === feedbackLoadSeq.current
+      )
+        setFeedbackLoading(false);
+    }
+  }
   function openEvent(e: DecisionEvent) {
+    feedbackContext.current = e.id;
+    feedbackTouched.current = {
+      note: false,
+      price: false,
+      quantity: false,
+      time: false,
+    };
+    setFeedbackHistory([]);
+    setFeedbackConflict(null);
     setSelectedEvent(e.id);
     setFeedbackNote("");
     setActualPrice("");
     setActualQuantity("");
     setActualTime("");
+    void loadFeedback(e.id, true);
     if (!e.read)
       void action(async () => {
         await api(`/events/${e.id}/read`, "POST");
@@ -788,6 +951,13 @@ export default function App() {
   }
   async function feedback(kind: "TAKEN" | "SKIPPED") {
     if (!event || !canRecord(event)) return;
+    if (feedbackConflict?.eventId === event.id && !feedbackConflict.loaded) {
+      setNotice({
+        text: "请先读取最新反馈并核对修订历史。当前输入已保留。",
+        error: true,
+      });
+      return;
+    }
     await action(
       async () => {
         if (
@@ -801,14 +971,37 @@ export default function App() {
           (!Number.isFinite(Number(actualPrice)) || Number(actualPrice) <= 0)
         )
           throw new Error("实际均价应大于 0。");
-        await api(`/events/${event.id}/feedback`, "POST", {
-          kind,
-          note: feedbackNote,
-          ...(actualPrice ? { actualPrice } : {}),
-          ...(actualQuantity ? { actualQuantity: Number(actualQuantity) } : {}),
-          ...(actualTime ? { actualTime: new Date(actualTime).getTime() } : {}),
-        });
-        await refresh();
+        const eventId = event.id;
+        try {
+          await api(`/events/${eventId}/feedback`, "POST", {
+            kind,
+            note: feedbackNote,
+            expectedRevisionId: feedbackHistory.at(-1)?.id ?? null,
+            ...(actualPrice ? { actualPrice } : {}),
+            ...(actualQuantity
+              ? { actualQuantity: Number(actualQuantity) }
+              : {}),
+            ...(actualTime
+              ? { actualTime: new Date(actualTime).getTime() }
+              : {}),
+          });
+          if (feedbackContext.current === eventId) setFeedbackConflict(null);
+        } catch (error) {
+          if (
+            error instanceof ApiError &&
+            error.status === 409 &&
+            error.code === "FEEDBACK_REVISION_CONFLICT" &&
+            feedbackContext.current === eventId
+          )
+            setFeedbackConflict({ eventId, loaded: false });
+          throw error;
+        }
+        await Promise.all([
+          refresh(),
+          feedbackContext.current === eventId
+            ? loadFeedback(eventId, false)
+            : Promise.resolve(),
+        ]);
       },
       kind === "TAKEN"
         ? "已保存交易摘要。请更新资金快照后继续风险检查。"
@@ -1797,6 +1990,32 @@ export default function App() {
                               />
                             </Field>
                           </div>
+                          <SupportEditor
+                            plan={plan}
+                            snapshot={supportPreview}
+                            loading={supportLoading}
+                            error={
+                              supportResult?.key === supportKey
+                                ? supportResult.error
+                                : null
+                            }
+                            legacy={Boolean(
+                              savedPlan && !savedPlan.supportSnapshot,
+                            )}
+                            onChange={(selections) =>
+                              updatePlan("supportSelections", selections)
+                            }
+                            onApply={(lower, upper) => {
+                              planEditSeq.current++;
+                              setPlan((current) => ({
+                                ...current,
+                                lower,
+                                upper,
+                              }));
+                              setDirty(true);
+                              setRisk(null);
+                            }}
+                          />
                           <div className="field-pair">
                             <Field label="支撑区下沿">
                               <input
@@ -2075,12 +2294,15 @@ export default function App() {
                                 !savedPlan ||
                                 dirty ||
                                 !plan.backgroundConfirmed ||
+                                !savedPlan?.supportSnapshot?.ready ||
+                                !supportPreview?.ready ||
                                 !!monitorUnavailable
                               }
                               onClick={() =>
                                 void action(
                                   async () => {
                                     const context = researchContext.current;
+                                    const editing = planEditSeq.current;
                                     const result = await api<{
                                       plan: Plan;
                                       risk: RiskResult;
@@ -2091,7 +2313,8 @@ export default function App() {
                                     );
                                     if (context === researchContext.current) {
                                       setSavedPlan(result.plan);
-                                      setRisk(result.risk);
+                                      if (editing === planEditSeq.current)
+                                        setRisk(result.risk);
                                     }
                                     await refresh();
                                   },
@@ -2112,6 +2335,11 @@ export default function App() {
                             </button>
                           )}
                         </div>
+                        {savedPlan && !savedPlan.supportSnapshot?.ready && (
+                          <small className="disabled-reason">
+                            已保存版本缺少完整支撑证据。请选择有效家族并保存新版本。
+                          </small>
+                        )}
                         {!!monitorUnavailable && (
                           <small className="disabled-reason">
                             {monitorUnavailable}
@@ -2320,6 +2548,14 @@ export default function App() {
                           ))}
                         </ul>
                       )}
+                      <DecisionEvidence event={event} />
+                      <EventReplay key={event.id} eventId={event.id} />
+                      <FeedbackHistory
+                        revisions={feedbackHistory}
+                        loading={feedbackLoading}
+                        error={feedbackError}
+                        onReload={() => void loadFeedback(event.id, true)}
+                      />
                       <details className="snapshot-details">
                         <summary>查看原始判断依据</summary>
                         <pre>{JSON.stringify(event.snapshot, null, 2)}</pre>
@@ -2331,12 +2567,49 @@ export default function App() {
                               ? "合成演练记录"
                               : "记录你的选择"}
                           </h3>
-                          <p>填写一次入场摘要。没有填写的字段保持为空。</p>
+                          <p>
+                            {event.feedback
+                              ? "已读取最新记录。更正会追加一个修订版本，保留先前的实际值。"
+                              : "填写一次入场摘要。没有填写的字段保持为空。"}
+                          </p>
+                          {feedbackConflict?.eventId === event.id && (
+                            <div
+                              className="feedback-conflict support-warning"
+                              role="region"
+                              aria-label="反馈版本冲突复核"
+                            >
+                              <strong>另一处已保存了新反馈</strong>
+                              <p>
+                                {feedbackConflict.loaded
+                                  ? "最新修订已显示在上方。当前输入保持不变；核对差异后，再次点击已交易或已跳过才会保存。"
+                                  : "当前备注和实际值已保留。请读取最新反馈，再核对历史与当前输入；系统不会自动重试。"}
+                              </p>
+                              <button
+                                type="button"
+                                className="button secondary compact"
+                                disabled={feedbackLoading || busy}
+                                onClick={async () => {
+                                  const eventId = event.id;
+                                  if (await loadFeedback(eventId, false))
+                                    setFeedbackConflict((current) =>
+                                      current?.eventId === eventId
+                                        ? { ...current, loaded: true }
+                                        : current,
+                                    );
+                                }}
+                              >
+                                读取最新反馈，保留当前输入
+                              </button>
+                            </div>
+                          )}
                           <Field label="备注">
                             <textarea
                               rows={3}
                               value={feedbackNote}
-                              onChange={(e) => setFeedbackNote(e.target.value)}
+                              onChange={(e) => {
+                                feedbackTouched.current.note = true;
+                                setFeedbackNote(e.target.value);
+                              }}
                               placeholder="为什么交易，或者为什么跳过？"
                             />
                           </Field>
@@ -2350,9 +2623,10 @@ export default function App() {
                                   min="0.000001"
                                   step="any"
                                   value={actualPrice}
-                                  onChange={(e) =>
-                                    setActualPrice(e.target.value)
-                                  }
+                                  onChange={(e) => {
+                                    feedbackTouched.current.price = true;
+                                    setActualPrice(e.target.value);
+                                  }}
                                   placeholder="未填写"
                                 />
                               </Field>
@@ -2363,9 +2637,10 @@ export default function App() {
                                   min="1"
                                   step="1"
                                   value={actualQuantity}
-                                  onChange={(e) =>
-                                    setActualQuantity(e.target.value)
-                                  }
+                                  onChange={(e) => {
+                                    feedbackTouched.current.quantity = true;
+                                    setActualQuantity(e.target.value);
+                                  }}
                                   placeholder="未填写"
                                 />
                               </Field>
@@ -2373,22 +2648,38 @@ export default function App() {
                             <Field label="实际入场时间（本地时区）">
                               <input
                                 type="datetime-local"
+                                step="0.001"
                                 value={actualTime}
-                                onChange={(e) => setActualTime(e.target.value)}
+                                onChange={(e) => {
+                                  feedbackTouched.current.time = true;
+                                  setActualTime(e.target.value);
+                                }}
                               />
                             </Field>
                           </details>
                           <div className="field-pair">
                             <button
                               className="button primary"
-                              disabled={busy}
+                              disabled={
+                                busy ||
+                                feedbackLoading ||
+                                Boolean(feedbackError) ||
+                                (feedbackConflict?.eventId === event.id &&
+                                  !feedbackConflict.loaded)
+                              }
                               onClick={() => void feedback("TAKEN")}
                             >
                               已交易
                             </button>
                             <button
                               className="button secondary"
-                              disabled={busy}
+                              disabled={
+                                busy ||
+                                feedbackLoading ||
+                                Boolean(feedbackError) ||
+                                (feedbackConflict?.eventId === event.id &&
+                                  !feedbackConflict.loaded)
+                              }
                               onClick={() => void feedback("SKIPPED")}
                             >
                               已跳过
@@ -2504,6 +2795,7 @@ export default function App() {
                     </small>
                   </div>
                 ))}
+                <MarketStatus />
                 <div className="source-note">
                   <strong>规则来源与版本</strong>
                   <p>

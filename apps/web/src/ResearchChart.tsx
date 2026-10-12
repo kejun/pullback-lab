@@ -271,6 +271,14 @@ export function ResearchChart({
       { value: plan.entryMax, title: "入场上限", color: colors.entry },
       { value: plan.stop, title: "止损", color: colors.stop, main: true },
     ];
+    for (const selection of plan.supportSelections ?? []) {
+      if (selection.source === "HORIZONTAL")
+        lines.push({
+          value: selection.price,
+          title: selection.label || "水平支撑",
+          color: colors.support,
+        });
+    }
     instance.priceLines = lines.flatMap((line) => {
       const price = numberOrNull(line.value);
       if (price === null || price <= 0) return [];
@@ -292,6 +300,7 @@ export function ResearchChart({
     plan.entryMin,
     plan.entryMax,
     plan.stop,
+    plan.supportSelections,
   ]);
 
   useEffect(() => {

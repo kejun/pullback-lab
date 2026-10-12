@@ -42,6 +42,8 @@ npm run test:e2e
 
 SQLite 使用 WAL、`synchronous=FULL`、`BEGIN IMMEDIATE` 和事件唯一约束。事件保存冻结输入与哈希；前端重连可重复投递，按事件 ID 合并。资金变更和计划修改使用 generation/version 校验，旧表单返回 409。
 
+服务启动会校验 SQLite 实际版本、取得单实例锁并事务迁移数据库。支撑家族、容差和输入版本由服务端冻结；提醒页可只读重放原始判断、查看实际交易偏离及反馈修订历史。日线采样默认关闭，显式启用配置和隔离范围见操作说明。
+
 ## 行情探针
 
 使用应用自己的只读 OpenAPI 凭据，不能复用聊天插件授权。配置 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN` 后，明确传入 1–2 只已授权证券：
@@ -59,6 +61,7 @@ npm run probe -- --symbols AAPL.US --observe-seconds 30
 - [工程口径 C01–C07](docs/engineering-spec.md)
 - [接口契约](docs/api-contract.md)
 - [验收与未完成范围](docs/acceptance.md)
+- [第二批实现与验证](docs/acceptance-v2.md)
 - [私有部署与备份恢复](docs/operations.md)
 
 Linear 项目：<https://linear.app/kejunz/project/pullback-lab-回调交易研究-018616dd62c7>。
