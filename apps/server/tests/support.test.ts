@@ -77,7 +77,10 @@ async function fixture() {
     return response.json<Plan>();
   };
   const activate = async (p: Plan) =>
-    post(`/api/plans/${p.id}/activate`, { expectedVersion: p.version });
+    post(`/api/plans/${p.id}/activate`, {
+      expectedVersion: p.version,
+      expectedAttemptId: p.attemptId ?? null,
+    });
   return { app, post, get, create, activate };
 }
 describe("trusted support snapshots and feedback evidence", () => {
@@ -124,7 +127,8 @@ describe("trusted support snapshots and feedback evidence", () => {
     expect((await f.activate(incomplete)).statusCode).toBe(422);
     const response = await f.post(`/api/plans/${incomplete.id}/versions`, {
       ...planInput,
-      expectedVersion: 1,
+      expectedVersion: incomplete.version,
+      expectedAttemptId: incomplete.attemptId ?? null,
     });
     const ready = response.json<Plan>();
     expect(ready.supportSnapshot).toMatchObject({
@@ -162,7 +166,8 @@ describe("trusted support snapshots and feedback evidence", () => {
     const updated = (
       await f.post(`/api/plans/${legacy.id}/versions`, {
         ...planInput,
-        expectedVersion: 1,
+        expectedVersion: legacy.version,
+        expectedAttemptId: legacy.attemptId ?? null,
       })
     ).json<Plan>();
     expect(updated.version).toBe(2);
@@ -172,13 +177,20 @@ describe("trusted support snapshots and feedback evidence", () => {
   it("detects an EMA seed revision even when the most recent bar and anchor are unchanged", async () => {
     const f = await fixture();
     const p = await f.create();
-    expect((await f.activate(p)).statusCode).toBe(200);
+    const activated = await f.activate(p);
+    expect(activated.statusCode).toBe(200);
+    const activePlan = activated.json<{ plan: Plan }>().plan;
     const seed = f.app.store.bars(p.instrumentId, "1D")[0];
     const revised: Bar = { ...seed, high: "45.00" };
     f.app.store.db
       .prepare("UPDATE bars SET json=? WHERE instrument_id=? AND bar_id=?")
       .run(JSON.stringify(revised), p.instrumentId, seed.id);
-    const events = (await f.post(`/api/demo/plans/${p.id}/replay`)).json<{
+    const events = (
+      await f.post(`/api/demo/plans/${p.id}/replay`, {
+        expectedVersion: activePlan.version,
+        expectedAttemptId: activePlan.attemptId ?? null,
+      })
+    ).json<{
       events: DecisionEvent[];
     }>().events;
     expect(events[0].reasons).toContain("PLAN_DATA_REVISION_CHANGED");
@@ -186,7 +198,8 @@ describe("trusted support snapshots and feedback evidence", () => {
     expect(f.app.store.planVersion(p).supportSnapshot?.dataRevision).toBe(
       p.supportSnapshot?.dataRevision,
     );
-    expect((await f.activate(p)).json().code).toBe(
+    const pausedPlan = f.app.store.plan(p.id);
+    expect((await f.activate(pausedPlan)).json().code).toBe(
       "PLAN_DATA_REVISION_CHANGED",
     );
   });
@@ -246,8 +259,15 @@ describe("trusted support snapshots and feedback evidence", () => {
   it("retains actual price/quantity/time with deviation flags and immutable correction history", async () => {
     const f = await fixture();
     const p = await f.create();
-    await f.activate(p);
-    const events = (await f.post(`/api/demo/plans/${p.id}/replay`)).json<{
+    const activated = await f.activate(p);
+    expect(activated.statusCode).toBe(200);
+    const activePlan = activated.json<{ plan: Plan }>().plan;
+    const events = (
+      await f.post(`/api/demo/plans/${p.id}/replay`, {
+        expectedVersion: activePlan.version,
+        expectedAttemptId: activePlan.attemptId ?? null,
+      })
+    ).json<{
       events: DecisionEvent[];
     }>().events;
     const event = events.find((e) => e.type === "HISTORICAL_TRIGGERED")!;
@@ -301,8 +321,15 @@ describe("trusted support snapshots and feedback evidence", () => {
   it("rejects divergent feedback from a stale page while allowing an identical retry", async () => {
     const f = await fixture();
     const p = await f.create();
-    await f.activate(p);
-    const event = (await f.post(`/api/demo/plans/${p.id}/replay`))
+    const activated = await f.activate(p);
+    expect(activated.statusCode).toBe(200);
+    const activePlan = activated.json<{ plan: Plan }>().plan;
+    const event = (
+      await f.post(`/api/demo/plans/${p.id}/replay`, {
+        expectedVersion: activePlan.version,
+        expectedAttemptId: activePlan.attemptId ?? null,
+      })
+    )
       .json<{ events: DecisionEvent[] }>()
       .events.find((e) => e.type === "HISTORICAL_TRIGGERED")!;
     const url = `/api/events/${event.id}/feedback`;
@@ -357,8 +384,15 @@ describe("trusted support snapshots and feedback evidence", () => {
       now,
     );
     const p = await f.create();
-    expect((await f.activate(p)).statusCode).toBe(200);
-    const event = (await f.post(`/api/demo/plans/${p.id}/replay`))
+    const activated = await f.activate(p);
+    expect(activated.statusCode).toBe(200);
+    const activePlan = activated.json<{ plan: Plan }>().plan;
+    const event = (
+      await f.post(`/api/demo/plans/${p.id}/replay`, {
+        expectedVersion: activePlan.version,
+        expectedAttemptId: activePlan.attemptId ?? null,
+      })
+    )
       .json<{ events: DecisionEvent[] }>()
       .events.find((e) => e.type === "HISTORICAL_TRIGGERED")!;
     expect(event.quantity).toBeGreaterThanOrEqual(250);
@@ -382,8 +416,15 @@ describe("trusted support snapshots and feedback evidence", () => {
   it("audits archived inputs without mutating a plan, reservation or event and authenticates new read routes", async () => {
     const f = await fixture();
     const p = await f.create();
-    await f.activate(p);
-    const events = (await f.post(`/api/demo/plans/${p.id}/replay`)).json<{
+    const activated = await f.activate(p);
+    expect(activated.statusCode).toBe(200);
+    const activePlan = activated.json<{ plan: Plan }>().plan;
+    const events = (
+      await f.post(`/api/demo/plans/${p.id}/replay`, {
+        expectedVersion: activePlan.version,
+        expectedAttemptId: activePlan.attemptId ?? null,
+      })
+    ).json<{
       events: DecisionEvent[];
     }>().events;
     const event = events.find((e) => e.type === "HISTORICAL_TRIGGERED")!;

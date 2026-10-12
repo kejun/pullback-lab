@@ -73,7 +73,7 @@ function runtime(
   runtimes.push(value);
   return value;
 }
-function setup(path = ":memory:", planInput = input) {
+function setup(path = ":memory:", planInput = input, confirmScreening = true) {
   const store = openStore(path);
   store.putInstrument({
     instrument: demoInstruments[0],
@@ -84,6 +84,7 @@ function setup(path = ":memory:", planInput = input) {
   for (const period of ["1D", "1m", "5m"] as const)
     store.putBars("DEMO-US-A", period, generateDemoBars("DEMO-US-A", period));
   store.updateFunds(funds, 0, now);
+  if (confirmScreening) store.confirmScreening(undefined, 0, now);
   const created = store.createPlan(planInput, now);
   const { plan } = store.activate(created.id, created.version, now);
   const runner = runtime(store);
@@ -481,5 +482,326 @@ describe("durable synthetic attempt runtime", () => {
       store.events().some((event) => event.type === "TECHNICAL_TRIGGERED"),
     ).toBe(false);
     auditAll(store);
+  });
+
+  it("recovers after the persisted watermark with fresh evidence and requires a new above-support observation before retest", () => {
+    const { store, plan, runner, command } = setup();
+    runner.step(plan.id, { ...command, expectedStep: 0 });
+    store.pause(plan.id, plan.version, now);
+    const oldRow = store.db
+      .prepare("SELECT * FROM runtime_attempts WHERE attempt_id=?")
+      .get(plan.attemptId!);
+    const oldReceipts = receipts(store, plan.attemptId!);
+    const oldEvents = store.events();
+    const oldProgress = runner.status(plan.id)!;
+    const recovered = runner.recover(plan.id, {
+      ...command,
+      sourceAttemptId: plan.attemptId!,
+      expectedStep: 1,
+    });
+    expect(recovered).toMatchObject({
+      template: "RECOVERY",
+      recoveredFromAttemptId: plan.attemptId,
+      activatedAt: oldProgress.simulationTime,
+      simulationTime: oldProgress.simulationTime,
+      phase: "READY",
+      step: 0,
+      inputCount: 0,
+      status: "WAIT_RETEST",
+      lastInput: null,
+    });
+    expect(recovered.attemptId).not.toBe(plan.attemptId);
+    const nextCommand = {
+      expectedVersion: plan.version,
+      expectedAttemptId: recovered.attemptId,
+    };
+    const remaining = fixture(store, recovered.attemptId);
+    expect(
+      remaining.every((entry) => entry.receivedAt > oldProgress.simulationTime),
+    ).toBe(true);
+    expect(remaining[0].type).toBe("BAR");
+    const afterFirst = runner.step(plan.id, {
+      ...nextCommand,
+      expectedStep: 0,
+    });
+    expect(afterFirst.status).toBe("WAIT_RETEST");
+    const firstReceipt = JSON.parse(
+      receipts(store, recovered.attemptId)[0].input_json,
+    ) as AttemptInput;
+    expect(
+      firstReceipt.type === "BAR" && firstReceipt.gates?.lod,
+    ).toMatchObject({
+      from: recovered.activatedAt,
+      complete: false,
+    });
+    const first = remaining[0];
+    if (first.type !== "BAR") throw new Error("bad recovery fixture");
+    const above: RuntimeInput = {
+      type: "BAR",
+      id: "synthetic:recovery-above",
+      receivedAt: first.bar.end + 61_000,
+      bar: {
+        ...first.bar,
+        id: "synthetic:recovery-above-bar",
+        start: first.bar.start + 60_000,
+        end: first.bar.end + 60_000,
+        receivedAt: first.bar.end + 61_000,
+        open: "100.50",
+        high: "100.70",
+        low: "100.40",
+        close: "100.60",
+      },
+    };
+    expect(runner.ingest(recovered.attemptId, above).status).toBe(
+      "WAIT_RETEST",
+    );
+    if (above.type !== "BAR") throw new Error("bad recovery bar");
+    const retest: RuntimeInput = {
+      ...above,
+      id: "synthetic:recovery-retest",
+      receivedAt: above.receivedAt + 60_000,
+      bar: {
+        ...above.bar,
+        id: "synthetic:recovery-retest-bar",
+        start: above.bar.start + 60_000,
+        end: above.bar.end + 60_000,
+        receivedAt: above.receivedAt + 60_000,
+        open: "100.40",
+        high: "100.50",
+        low: "100.00",
+        close: "100.20",
+      },
+    };
+    expect(runner.ingest(recovered.attemptId, retest).status).toBe("ARMED");
+    expect(
+      store.events().filter((event) => event.type === "TECHNICAL_TRIGGERED"),
+    ).toHaveLength(0);
+    expect(
+      store.db
+        .prepare("SELECT * FROM runtime_attempts WHERE attempt_id=?")
+        .get(plan.attemptId!),
+    ).toEqual(oldRow);
+    expect(receipts(store, plan.attemptId!)).toEqual(oldReceipts);
+    expect(
+      store.events().filter((event) => event.attemptId === plan.attemptId),
+    ).toEqual(oldEvents);
+    const configs = store.db
+      .prepare("SELECT config_json FROM runtime_attempts ORDER BY rowid")
+      .all() as { config_json: string }[];
+    expect(JSON.parse(configs[1].config_json).evidenceEpoch).not.toBe(
+      JSON.parse(configs[0].config_json).evidenceEpoch,
+    );
+    expect(() =>
+      runner.ingest(recovered.attemptId, fixture(store, plan.attemptId!)[0]),
+    ).toThrow(/旧水位/);
+    auditAll(store);
+  });
+
+  it("checks recovery attempt and step CAS and rejects old commands after replacing the identity", () => {
+    const { store, plan, runner, command } = setup();
+    runner.step(plan.id, { ...command, expectedStep: 0 });
+    store.pause(plan.id, plan.version, now);
+    const recoveryCommand = {
+      ...command,
+      sourceAttemptId: plan.attemptId!,
+      expectedStep: 1,
+    };
+    expect(() =>
+      runner.recover(plan.id, { ...recoveryCommand, expectedStep: 0 }),
+    ).toThrow(/进度已改变/);
+    expect(() =>
+      runner.recover(plan.id, { ...recoveryCommand, expectedAttemptId: "old" }),
+    ).toThrow(/尝试已改变/);
+    runner.recover(plan.id, recoveryCommand);
+    expect(() => runner.recover(plan.id, recoveryCommand)).toThrow(
+      /尝试已改变/,
+    );
+    expect(() => runner.step(plan.id, { ...command, expectedStep: 1 })).toThrow(
+      /尝试已改变/,
+    );
+    expect(
+      store.db.prepare("SELECT count(*) AS count FROM runtime_attempts").get(),
+    ).toEqual({ count: 2 });
+  });
+
+  it("keeps the old source visible after a version edit and recovers with current frozen parameters", () => {
+    const { store, plan, runner, command } = setup();
+    runner.step(plan.id, { ...command, expectedStep: 0 });
+    store.pause(plan.id, plan.version, now);
+    const revised = store.updatePlan(
+      plan.id,
+      { ...input, upper: "100.30", reason: "新版本恢复" },
+      plan.version,
+      now,
+    );
+    expect(revised.attemptId).toBeNull();
+    expect(runner.status(plan.id)?.attemptId).toBe(plan.attemptId);
+    const recovered = runner.recover(plan.id, {
+      expectedVersion: revised.version,
+      expectedAttemptId: null,
+      sourceAttemptId: plan.attemptId!,
+      expectedStep: 1,
+    });
+    expect(recovered).toMatchObject({
+      template: "RECOVERY",
+      planVersion: revised.version,
+      recoveredFromAttemptId: plan.attemptId,
+      status: "WAIT_RETEST",
+    });
+    const row = store.db
+      .prepare("SELECT config_json FROM runtime_attempts WHERE attempt_id=?")
+      .get(recovered.attemptId) as { config_json: string };
+    expect(JSON.parse(row.config_json)).toMatchObject({
+      upper: "100.30",
+      template: "RECOVERY",
+      preActivationEvidence: "UNKNOWN",
+    });
+  });
+
+  it("does not let a consumed or pending entry recover into another entry", () => {
+    const { store, plan, runner, command } = setup();
+    runner.step(plan.id, { ...command, expectedStep: 0, count: 3 });
+    const recoveryCommand = {
+      ...command,
+      sourceAttemptId: plan.attemptId!,
+      expectedStep: 3,
+    };
+    const before = {
+      plan: store.plan(plan.id),
+      reservations: store.reservations(),
+      events: store.events(),
+    };
+    expect(() => runner.recover(plan.id, recoveryCommand)).toThrow(
+      /已消费|尚待核对/,
+    );
+    expect({
+      plan: store.plan(plan.id),
+      reservations: store.reservations(),
+      events: store.events(),
+    }).toEqual(before);
+  });
+
+  it("rejects recovery after the first hour and reports missing runtime watermarks explicitly", () => {
+    const { store, plan, runner, command } = setup();
+    const row = store.db
+      .prepare("SELECT config_json FROM runtime_attempts WHERE attempt_id=?")
+      .get(plan.attemptId!) as { config_json: string };
+    const open = JSON.parse(row.config_json).sessionOpenAt as number;
+    runner.ingest(plan.attemptId!, {
+      type: "CLOCK",
+      id: "synthetic:first-hour-ended",
+      receivedAt: open + 60 * 60_000,
+    });
+    store.pause(plan.id, plan.version, now);
+    expect(() =>
+      runner.recover(plan.id, {
+        ...command,
+        sourceAttemptId: plan.attemptId!,
+        expectedStep: 0,
+      }),
+    ).toThrow(/首小时/);
+    const created = store.createPlan(input, now);
+    const other = store.activate(created.id, created.version, now).plan;
+    store.pause(other.id, other.version, now);
+    expect(() =>
+      runner.recover(other.id, {
+        expectedVersion: other.version,
+        expectedAttemptId: other.attemptId!,
+        sourceAttemptId: other.attemptId!,
+        expectedStep: 0,
+      }),
+    ).toThrow(/没有可验证水位/);
+  });
+
+  it("rolls back recovery activation and reservation changes if its durable checkpoint cannot be created", () => {
+    const { store, plan, runner, command } = setup();
+    runner.step(plan.id, { ...command, expectedStep: 0 });
+    runner.ingest(plan.attemptId!, {
+      type: "DATA_GAP",
+      id: "synthetic:recovery-test-gap",
+      receivedAt: runner.status(plan.id)!.simulationTime,
+      reason: "SAMPLE_GAP",
+    });
+    const before = {
+      plan: store.plan(plan.id),
+      reservations: store.reservations(),
+      attempts: store.db.prepare("SELECT * FROM attempts").all(),
+      runtime: store.db.prepare("SELECT * FROM runtime_attempts").all(),
+      events: store.events(),
+    };
+    store.db.exec(
+      "CREATE TRIGGER fail_recovery_checkpoint BEFORE INSERT ON runtime_attempts BEGIN SELECT RAISE(ABORT,'simulated checkpoint failure'); END;",
+    );
+    expect(() =>
+      runner.recover(plan.id, {
+        ...command,
+        sourceAttemptId: plan.attemptId!,
+        expectedStep: 1,
+      }),
+    ).toThrow(/simulated checkpoint failure/);
+    expect({
+      plan: store.plan(plan.id),
+      reservations: store.reservations(),
+      attempts: store.db.prepare("SELECT * FROM attempts").all(),
+      runtime: store.db.prepare("SELECT * FROM runtime_attempts").all(),
+      events: store.events(),
+    }).toEqual(before);
+  });
+
+  it("does not label a restarted same-session attempt as SESSION_FIRST", () => {
+    const { store, plan, runner, command } = setup();
+    runner.step(plan.id, { ...command, expectedStep: 0 });
+    store.pause(plan.id, plan.version, now);
+    const next = store.activate(plan.id, plan.version, now).plan;
+    expect(() =>
+      runner.start(plan.id, {
+        expectedVersion: next.version,
+        expectedAttemptId: next.attemptId!,
+      }),
+    ).toThrow(/已保存水位/);
+    expect(
+      store.db.prepare("SELECT count(*) AS count FROM runtime_attempts").get(),
+    ).toEqual({ count: 1 });
+  });
+  it("rechecks background confirmation and a nonblank reason on an edited version before recovery", () => {
+    const { store, plan, runner, command } = setup();
+    runner.step(plan.id, { ...command, expectedStep: 0 });
+    store.pause(plan.id, plan.version, now);
+    let version = plan.version;
+    for (const changed of [{ backgroundConfirmed: false }, { reason: " " }]) {
+      const revised = store.updatePlan(
+        plan.id,
+        { ...input, ...changed },
+        version,
+        now,
+      );
+      version = revised.version;
+      expect(() =>
+        runner.recover(plan.id, {
+          expectedVersion: version,
+          expectedAttemptId: null,
+          sourceAttemptId: plan.attemptId!,
+          expectedStep: 1,
+        }),
+      ).toThrow(/确认日线背景/);
+      expect(
+        store.db.prepare("SELECT count(*) AS count FROM attempts").get(),
+      ).toEqual({ count: 1 });
+    }
+  });
+  it("requires explicit screening confirmation before recovering a legacy unconfirmed attempt", () => {
+    const { store, plan, runner, command } = setup(":memory:", input, false);
+    runner.step(plan.id, { ...command, expectedStep: 0 });
+    store.pause(plan.id, plan.version, now);
+    expect(() =>
+      runner.recover(plan.id, {
+        ...command,
+        sourceAttemptId: plan.attemptId!,
+        expectedStep: 1,
+      }),
+    ).toThrow(/确认 C 类工程筛选预设/);
+    expect(
+      store.db.prepare("SELECT count(*) AS count FROM attempts").get(),
+    ).toEqual({ count: 1 });
   });
 });
