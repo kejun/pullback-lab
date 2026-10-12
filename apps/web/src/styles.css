@@ -3264,3 +3264,29 @@ details > summary {
 .recovery-action {
   margin-block: 12px;
 }
+/* Read-only corporate action provenance, scoped to the research panel. */
+.action-evidence { padding: 24px; min-width: 0; }
+.action-evidence small, .action-evidence dt { color: var(--muted, #6f7873); }
+.action-evidence p { line-height: 1.7; }
+.action-evidence h4 { margin: 24px 0 12px; }
+.evidence-notice { padding: 12px 14px; margin: 16px 0 8px; background: #faf4e9; color: #765b27; border-radius: 8px; font-size: 13px; line-height: 1.7; }
+.evidence-version-label { display: grid; gap: 8px; margin: 16px 0; font-size: 13px; }
+.evidence-version-label select { width: 100%; min-width: 0; padding: 10px; border: 1px solid #dddeda; border-radius: 6px; background: #fff; font: inherit; }
+.evidence-state { margin-top: 20px; font-size: 12px; color: #7a6135; }
+.evidence-facts, .evidence-change dl { display: grid; gap: 12px; font-size: 13px; }
+.evidence-facts > div, .evidence-change dl > div { display: grid; grid-template-columns: 94px minmax(0, 1fr); gap: 12px; line-height: 1.7; }
+.action-evidence dd { margin: 0; }
+.evidence-items { list-style: none; padding: 0; margin: 0; }
+.evidence-items > li { border-top: 1px solid #e6e7e2; padding: 14px 0; font-size: 13px; }
+.evidence-items p { margin: 6px 0; }
+.evidence-document-heading { display: flex; gap: 12px; align-items: baseline; justify-content: space-between; flex-wrap: wrap; }
+.action-evidence a { color: #375c46; }
+.action-evidence summary { cursor: pointer; font-size: 13px; line-height: 1.7; }
+.evidence-comparison { border-top: 1px solid #e6e7e2; padding-top: 18px; margin-top: 8px; }
+.evidence-change { padding-top: 16px; font-size: 13px; }
+.evidence-source { max-height: 360px; overflow: auto; padding: 14px; background: #f5f6f2; border: 1px solid #e1e3da; border-radius: 6px; white-space: pre-wrap; font-size: 12px; line-height: 1.7; }
+.evidence-version, .evidence-source { overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .action-evidence { padding: 16px; }
+  .evidence-facts > div, .evidence-change dl > div { grid-template-columns: 1fr; gap: 2px; }
+}

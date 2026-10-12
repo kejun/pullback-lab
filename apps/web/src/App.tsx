@@ -34,6 +34,7 @@ import { SyntheticRuntime } from "./SyntheticRuntime";
 import { SupportEditor } from "./SupportEditor";
 import { MarketStatus } from "./MarketStatus";
 import { OperationsStatus } from "./OperationsStatus";
+import { ActionEvidence } from "./ActionEvidence";
 import { UniverseImport, ObservationEditor } from "./UniverseEditor";
 import type { UniverseSnapshot } from "../../../packages/contracts/universe";
 import { ScreeningRulesEditor } from "./ScreeningRulesEditor";
@@ -2101,6 +2102,7 @@ export default function App() {
                           />
                         )}
                       </section>
+                      <ActionEvidence key={instrument.id} instrumentId={instrument.id} />
                       {boot.plans.filter((p) => p.instrumentId === selectedId)
                         .length > 0 && (
                         <section className="panel plan-history">

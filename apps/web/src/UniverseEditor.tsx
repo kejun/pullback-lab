@@ -532,7 +532,7 @@ export function ObservationEditor({
           onClick={() => {
             if (
               window.confirm(
-                `将 ${instrument.symbol} 移出观察列表？已关联计划的标的不可移除。`,
+                `将 ${instrument.symbol} 移出观察列表？已关联计划或公司行动证据的标的不可移除。`,
               )
             )
               void save(true);
