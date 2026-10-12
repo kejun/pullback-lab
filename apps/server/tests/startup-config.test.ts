@@ -104,6 +104,8 @@ describe("read-only startup preflight", () => {
       { PULLBACK_DB: ":memory:" },
       { PULLBACK_BACKUP_DIR: "" },
       { PULLBACK_MARKET_WORKER: "yes" },
+      { PULLBACK_MINUTE_SYMBOLS: "AAPL.US,AAPL.US" },
+      { PULLBACK_MINUTE_SYMBOLS: "private-invalid-selection" },
       { PULLBACK_DEMO: "yes" },
     ])
       expect(() =>
@@ -124,6 +126,20 @@ describe("read-only startup preflight", () => {
     expect(result.stderr).not.toContain("tiny");
     expect(result.stderr).not.toContain("secret-origin");
     expect(result.stderr).not.toContain(db);
+    expect(existsSync(db)).toBe(false);
+    expect(existsSync(`${db}.service-lock.sqlite`)).toBe(false);
+  });
+  it("rejects malformed minute selection before creating the database or lock", () => {
+    const db = join(directory(), "minute-config.sqlite");
+    const result = main({
+      PULLBACK_PASSWORD: "local-password",
+      PULLBACK_DB: db,
+      PULLBACK_MINUTE_SYMBOLS: "private-invalid-selection",
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("INVALID_MINUTE_SYMBOLS");
+    expect(result.stderr).not.toContain("private-invalid-selection");
     expect(existsSync(db)).toBe(false);
     expect(existsSync(`${db}.service-lock.sqlite`)).toBe(false);
   });

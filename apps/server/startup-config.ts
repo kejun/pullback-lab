@@ -1,3 +1,4 @@
+import { parseMinuteSymbols } from "../../packages/market-data/sampling-config.js";
 import { statSync } from "node:fs";
 import { isIP } from "node:net";
 import { dirname, resolve } from "node:path";
@@ -92,6 +93,14 @@ export function readStartupConfig(
   )
     invalid("WEB_BUILD_REQUIRED", "生产页面尚未构建，请先执行 npm run build");
   flag(env, "PULLBACK_MARKET_WORKER");
+  try {
+    parseMinuteSymbols(env.PULLBACK_MINUTE_SYMBOLS);
+  } catch {
+    invalid(
+      "INVALID_MINUTE_SYMBOLS",
+      "分钟采样须填写最多 10 个不重复的完整证券代码，以逗号分隔",
+    );
+  }
   return {
     databasePath,
     backupDirectory: backup

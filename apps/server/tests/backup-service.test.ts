@@ -90,7 +90,7 @@ describe("verified online backup", () => {
       .run();
     try {
       expect(await backupDatabase(source, target)).toEqual({
-        schemaVersion: 7,
+        schemaVersion: 8,
       });
     } finally {
       writer.exec("ROLLBACK");
@@ -149,7 +149,7 @@ describe("verified online backup", () => {
     expect(
       results.find((result) => result.status === "rejected"),
     ).toMatchObject({ reason: { code: "BACKUP_TARGET_EXISTS" } });
-    expect(schema(open(target))).toEqual({ version: 7 });
+    expect(schema(open(target))).toEqual({ version: 8 });
     noPartials(dir);
   });
 
@@ -263,7 +263,7 @@ describe("offline new-path restore", () => {
       rows: store.db.prepare(`SELECT * FROM ${table}`).all(),
     }));
     await expect(restoreDatabase(source, target)).resolves.toEqual({
-      schemaVersion: 7,
+      schemaVersion: 8,
     });
     const restored = current(target);
     expect(count(restored.db, "sessions")).toBe(0);
@@ -328,12 +328,12 @@ describe("offline new-path restore", () => {
     legacy.close();
     const original = readFileSync(source);
     await expect(restoreDatabase(source, target)).resolves.toEqual({
-      schemaVersion: 7,
+      schemaVersion: 8,
     });
     expect(readFileSync(source)).toEqual(original);
     expect(schema(open(source))).toEqual({ version: 1 });
     const restored = open(target);
-    expect(schema(restored)).toEqual({ version: 7 });
+    expect(schema(restored)).toEqual({ version: 8 });
     expect(restored.prepare("SELECT json FROM plan_versions").get()).toEqual({
       json: '{"kept":"exact"}',
     });
@@ -436,5 +436,61 @@ describe("automatic migration checkpoint", () => {
       backupBeforeMigration(orphan, join(dir, "backups")),
     ).rejects.toMatchObject({ code: "BACKUP_TARGET_EXISTS" });
     expect(existsSync(join(dir, "backups"))).toBe(false);
+  });
+});
+
+describe("period watermark migration", () => {
+  it("rolls back the entire cursor migration if a legacy value is invalid", () => {
+    const db = old(join(directory(), "invalid-v7.sqlite"), 7);
+    db.prepare(
+      "INSERT INTO market_worker_watermarks VALUES('US:TEST.US','invalid-json')",
+    ).run();
+    expect(() => runMigrations(db)).toThrow();
+    expect(schema(db)).toEqual({ version: 7 });
+    expect(db.prepare("SELECT * FROM market_worker_watermarks").get()).toEqual({
+      instrument_id: "US:TEST.US",
+      json: "invalid-json",
+    });
+    expect(
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE name='market_worker_streams'",
+        )
+        .get(),
+    ).toBeUndefined();
+  });
+
+  it("backs up schema 7 and preserves daily history and private cursor fields when upgrading", async () => {
+    const dir = directory(),
+      path = join(dir, "v7.sqlite");
+    const before = old(path, 7);
+    const daily = {
+      instrumentId: "US:AAPL.US",
+      providerTimestamp: 123,
+      receivedAt: 456,
+      connectionEpoch: 2,
+      historical: true,
+      acceptedStart: 100,
+    };
+    before
+      .prepare("INSERT INTO market_worker_watermarks VALUES(?,?)")
+      .run(daily.instrumentId, JSON.stringify(daily));
+    before.close();
+    const backup = await backupBeforeMigration(path, join(dir, "backups"));
+    expect(backup?.schemaVersion).toBe(7);
+    const store = current(path);
+    expect(schema(store.db)).toEqual({ version: 8 });
+    const row = store.db
+      .prepare("SELECT * FROM market_worker_watermarks")
+      .get() as { instrument_id: string; period: string; json: string };
+    expect(row.period).toBe("1D");
+    expect(JSON.parse(row.json)).toEqual({ ...daily, period: "1D" });
+    expect(count(store.db, "market_worker_streams")).toBe(0);
+    const saved = open(backup!.path);
+    expect(schema(saved)).toEqual({ version: 7 });
+    expect(
+      saved.prepare("SELECT json FROM market_worker_watermarks").get(),
+    ).toEqual({ json: JSON.stringify(daily) });
+    expect(store.db.pragma("foreign_key_check")).toEqual([]);
   });
 });

@@ -698,3 +698,285 @@ describe("worker external-operation deadlines", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 });
+
+describe("explicit minute history sampling", () => {
+  function minuteSetup(
+    extra: Partial<MarketWorkerOptions> = {},
+    fetch?: MarketDataAdapter["fetchBars"],
+  ) {
+    vi.useFakeTimers();
+    vi.setSystemTime(at);
+    const fetchBars = vi.fn(
+      fetch ??
+        (async (symbol, period) => [
+          sample({ symbol, period, receivedAt: Date.now() }),
+        ]),
+    );
+    const ctx = setup({
+      now: Date.now,
+      minuteSymbols: [instrument.symbol],
+      adapterFactory: () => fakeAdapter(fetchBars),
+      ...extra,
+    });
+    return { ...ctx, fetchBars };
+  }
+  async function poll(worker: MarketWorker, duration = 3000) {
+    const task = worker.pollOnce();
+    await vi.advanceTimersByTimeAsync(duration);
+    await task;
+  }
+  it("shares one request lane, persists independent period cursors, and never promotes confirmed minute histories", async () => {
+    const verifier = vi.fn((s: ProviderBarSample) => evidence(s));
+    const ctx = minuteSetup(
+      { verifySample: verifier },
+      async (symbol, period) => [
+        sample({
+          symbol,
+          period,
+          finality: "CONFIRMED",
+          receivedAt: Date.now(),
+        }),
+      ],
+    );
+    const task = ctx.worker.pollOnce();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ctx.fetchBars).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(ctx.fetchBars).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ctx.fetchBars).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1000);
+    await task;
+    expect(ctx.fetchBars.mock.calls).toEqual([
+      ["TEST.US", "1D", 300],
+      ["TEST.US", "1m", 300],
+      ["TEST.US", "5m", 60],
+    ]);
+    expect(verifier).toHaveBeenCalledTimes(1);
+    const status = ctx.worker.status();
+    expect(status).toMatchObject({
+      sampleCount: 3,
+      acceptedCount: 1,
+      quarantinedCount: 2,
+      liveEligible: false,
+      continuity: "UNVERIFIED",
+    });
+    expect(status.watermarks.map((x) => x.period)).toEqual(["1D", "1m", "5m"]);
+    expect(
+      status.streams.map((x) => [
+        x.period,
+        x.outcome,
+        x.lastSampleCount,
+        x.lastQuarantineReason,
+      ]),
+    ).toEqual([
+      ["1D", "SAMPLED", 1, null],
+      ["1m", "SAMPLED", 1, "MINUTE_EVIDENCE_UNVERIFIED"],
+      ["5m", "SAMPLED", 1, "MINUTE_EVIDENCE_UNVERIFIED"],
+    ]);
+    expect(
+      ctx.db.prepare("SELECT count(*) n FROM market_raw_inputs").get(),
+    ).toEqual({ n: 1 });
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    await poll(ctx.worker);
+    expect(ctx.fetchBars.mock.calls.slice(3)).toEqual([
+      ["TEST.US", "1D", 5],
+      ["TEST.US", "1m", 300],
+      ["TEST.US", "5m", 60],
+    ]);
+    expect(ctx.worker.status().duplicateCount).toBe(3);
+  });
+  it("does not add configured symbols to the pool or fetch minutes for unselected research instruments", async () => {
+    const ctx = minuteSetup({ minuteSymbols: ["AAPL.US"] });
+    await poll(ctx.worker);
+    expect(ctx.fetchBars.mock.calls).toEqual([["TEST.US", "1D", 300]]);
+    expect(ctx.worker.status().streams).toHaveLength(1);
+  });
+  it("distinguishes empty responses from received evidence and never advances a cursor on empty or wrong-period samples", async () => {
+    const ctx = minuteSetup({}, async (_, period) =>
+      period === "1D" ? [] : [sample({ period: "1D", receivedAt: Date.now() })],
+    );
+    await poll(ctx.worker);
+    expect(ctx.worker.status().watermarks).toEqual([]);
+    expect(
+      ctx.worker
+        .status()
+        .streams.map((x) => [x.period, x.outcome, x.lastSampleCount]),
+    ).toEqual([
+      ["1D", "EMPTY", 0],
+      ["1m", "SAMPLED", 1],
+      ["5m", "SAMPLED", 1],
+    ]);
+    expect(ctx.worker.status().lastQuarantineReason).toBe(
+      "SAMPLE_IDENTITY_OR_TIME_INVALID",
+    );
+    expect(ctx.worker.status().lastSuccessAt).not.toBeNull();
+  });
+  it("preserves earlier period evidence on failure and retains a separate failure outcome after restart", async () => {
+    const ctx = minuteSetup({}, async (symbol, period) => {
+      if (period === "5m") throw Error("private-token-not-for-report");
+      return [sample({ symbol, period, receivedAt: Date.now() })];
+    });
+    await poll(ctx.worker);
+    expect(
+      ctx.worker.status().streams.map((x) => [x.period, x.outcome]),
+    ).toEqual([
+      ["1D", "SAMPLED"],
+      ["1m", "SAMPLED"],
+      ["5m", "FAILED"],
+    ]);
+    expect(ctx.worker.status().watermarks.map((x) => x.period)).toEqual([
+      "1D",
+      "1m",
+    ]);
+    expect(ctx.worker.status().lastSuccessAt).toBeNull();
+    expect(JSON.stringify(ctx.worker.status())).not.toContain("private-token");
+    await ctx.worker.stop();
+    const next = new MarketWorker({
+      db: ctx.db,
+      researchInstruments: () => [instrument],
+      now: Date.now,
+    });
+    expect(next.status().streams.find((x) => x.period === "1m")).toMatchObject({
+      selected: false,
+      outcome: "SAMPLED",
+    });
+    expect(next.status().streams.find((x) => x.period === "5m")).toMatchObject({
+      selected: false,
+      outcome: "FAILED",
+      lastErrorCode: "PROVIDER_REQUEST_FAILED",
+    });
+    expect(next.status().watermarks).toHaveLength(2);
+    await next.stop();
+  });
+  it("stops subsequent minute requests when a symbol is removed while a request is in flight", async () => {
+    let pool = [instrument];
+    const ctx = minuteSetup(
+      { researchInstruments: () => pool },
+      async (symbol, period) => {
+        if (period === "1m") pool = [];
+        return [sample({ symbol, period, receivedAt: Date.now() })];
+      },
+    );
+    await poll(ctx.worker);
+    expect(ctx.fetchBars.mock.calls.map((x) => x[1])).toEqual(["1D", "1m"]);
+    expect(ctx.worker.status().streams.every((x) => !x.selected)).toBe(true);
+    expect(ctx.worker.status().sampleCount).toBe(2);
+  });
+  it("does not stack retries behind a hung minute request or archive its late result", async () => {
+    let complete!: (samples: ProviderBarSample[]) => void;
+    const ctx = minuteSetup({ requestTimeoutMs: 20 }, async (symbol, period) =>
+      period === "1m"
+        ? await new Promise((resolve) => {
+            complete = resolve;
+          })
+        : [sample({ symbol, period, receivedAt: Date.now() })],
+    );
+    await poll(ctx.worker);
+    expect(
+      ctx.worker.status().streams.find((x) => x.period === "1m"),
+    ).toMatchObject({
+      outcome: "FAILED",
+      lastErrorCode: "PROVIDER_REQUEST_TIMEOUT",
+    });
+    await vi.advanceTimersByTimeAsync(6000);
+    await ctx.worker.pollOnce();
+    expect(ctx.fetchBars).toHaveBeenCalledTimes(2);
+    expect(ctx.worker.status().lastErrorCode).toBe(
+      "PROVIDER_REQUEST_UNSETTLED",
+    );
+    complete([sample({ period: "1m", receivedAt: Date.now() })]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ctx.worker.status().sampleCount).toBe(1);
+    expect(ctx.worker.status().watermarks.map((x) => x.period)).toEqual(["1D"]);
+  });
+  it("interrupts an in-flight minute request on stop and never writes its late settlement", async () => {
+    let complete!: (samples: ProviderBarSample[]) => void;
+    const ctx = minuteSetup({}, async (symbol, period) =>
+      period === "1m"
+        ? await new Promise((resolve) => {
+            complete = resolve;
+          })
+        : [sample({ symbol, period, receivedAt: Date.now() })],
+    );
+    const task = ctx.worker.pollOnce();
+    await vi.advanceTimersByTimeAsync(1000);
+    await ctx.worker.stop();
+    await task;
+    expect(
+      ctx.worker.status().streams.find((x) => x.period === "1m"),
+    ).toMatchObject({
+      outcome: "INTERRUPTED",
+      lastErrorCode: "WORKER_STOPPED",
+    });
+    const before = ctx.worker.status();
+    complete([sample({ period: "1m", receivedAt: Date.now() })]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ctx.worker.status()).toEqual(before);
+    expect(ctx.fetchBars).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("rolls back a failed minute receipt together with its cursor and per-stream count", async () => {
+    const ctx = minuteSetup();
+    ctx.db
+      .exec(`CREATE TRIGGER fail_minute_receipt BEFORE INSERT ON market_provider_receipts
+      WHEN json_extract(NEW.payload_json,'$.period')='1m'
+      BEGIN SELECT RAISE(ABORT,'private storage details'); END;`);
+    await poll(ctx.worker);
+    expect(ctx.worker.status()).toMatchObject({
+      reason: "PERSISTENCE_UNAVAILABLE",
+      sampleCount: 1,
+      quarantinedCount: 1,
+    });
+    expect(
+      ctx.worker.status().streams.find((x) => x.period === "1m"),
+    ).toMatchObject({
+      outcome: "FAILED",
+      lastSampleCount: 0,
+      lastErrorCode: "PERSISTENCE_UNAVAILABLE",
+    });
+    expect(ctx.worker.status().watermarks.map((x) => x.period)).toEqual(["1D"]);
+    expect(
+      ctx.db.prepare("SELECT count(*) n FROM market_provider_receipts").get(),
+    ).toEqual({ n: 1 });
+  });
+  it("marks a crashed request interrupted even if the next start disables sampling", async () => {
+    const ctx = minuteSetup();
+    await poll(ctx.worker);
+    await ctx.worker.stop();
+    ctx.db
+      .prepare(
+        "UPDATE market_worker_streams SET json=json_set(json,'$.outcome','PENDING') WHERE period='1m'",
+      )
+      .run();
+    const next = new MarketWorker({
+      db: ctx.db,
+      researchInstruments: () => [instrument],
+      now: Date.now,
+    });
+    expect(next.status().streams.find((x) => x.period === "1m")).toMatchObject({
+      outcome: "INTERRUPTED",
+      lastErrorCode: "WORKER_INTERRUPTED",
+      selected: false,
+    });
+    expect(next.status().state).toBe("DISABLED");
+    await next.stop();
+  });
+  it("bounds provider output before archiving any oversized response", async () => {
+    const ctx = minuteSetup({}, async (symbol, period) =>
+      period === "5m"
+        ? Array.from({ length: 61 }, () =>
+            sample({ symbol, period, receivedAt: Date.now() }),
+          )
+        : [],
+    );
+    await poll(ctx.worker);
+    expect(ctx.worker.status()).toMatchObject({
+      lastErrorCode: "PROVIDER_SAMPLE_LIMIT",
+      sampleCount: 0,
+    });
+    expect(
+      ctx.worker.status().streams.find((x) => x.period === "5m"),
+    ).toMatchObject({ outcome: "FAILED", lastSampleCount: 0 });
+  });
+});

@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { parseMinuteSymbols } from "../../packages/market-data/sampling-config.js";
+import { MARKET_STREAM_SCHEMA_SQL } from "./market-stream-schema.js";
 import type Database from "better-sqlite3";
 import type { Instrument } from "../../packages/contracts/index.js";
 import type {
@@ -33,6 +35,20 @@ export interface VerifiedSampleEvidence {
   /** Previous exchange session's start, from an audited calendar, never weekday arithmetic. */
   expectedPreviousStart?: number;
 }
+export type SamplePeriod = ProviderBarSample["period"];
+export interface StreamStatus {
+  instrumentId: string;
+  symbol: string;
+  period: SamplePeriod;
+  lastAttemptAt: number;
+  lastSuccessAt: number | null;
+  lastFailureAt: number | null;
+  lastErrorCode: string | null;
+  lastQuarantineReason: string | null;
+  outcome: "PENDING" | "SAMPLED" | "EMPTY" | "FAILED" | "INTERRUPTED";
+  lastSampleCount: number;
+  requestedCount: number;
+}
 export interface MarketWorkerStatus {
   enabled: boolean;
   state: "DISABLED" | "IDLE" | "POLLING" | "BACKOFF" | "STOPPED";
@@ -59,8 +75,11 @@ export interface MarketWorkerStatus {
   researchCount: number;
   researchLimit: 100;
   latestReceiptSequence: number | null;
+  minuteSymbols: string[];
+  streams: Array<StreamStatus & { selected: boolean }>;
   watermarks: Array<{
     instrumentId: string;
+    period: SamplePeriod;
     providerTimestamp: number;
     receivedAt: number;
     connectionEpoch: number;
@@ -72,6 +91,8 @@ export interface MarketWorkerOptions {
   researchInstruments: () => Instrument[];
   enabled?: boolean;
   credentialsPresent?: boolean;
+  /** Explicit selection within the current research pool; at most ten symbols. */
+  minuteSymbols?: string[];
   adapterFactory?: () => MarketDataAdapter | Promise<MarketDataAdapter>;
   now?: () => number;
   pollIntervalMs?: number;
@@ -87,6 +108,7 @@ export interface MarketWorkerOptions {
 }
 type Watermark = {
   instrumentId: string;
+  period: SamplePeriod;
   providerTimestamp: number;
   receivedAt: number;
   connectionEpoch: number;
@@ -119,6 +141,8 @@ export const emptyMarketWorkerStatus = (): MarketWorkerStatus => ({
   researchCount: 0,
   researchLimit: 100,
   latestReceiptSequence: null,
+  minuteSymbols: [],
+  streams: [],
   watermarks: [],
 });
 const safeSymbol = (instrument: Instrument) =>
@@ -156,9 +180,11 @@ export const MARKET_WORKER_SCHEMA_SQL = `
       CREATE TRIGGER IF NOT EXISTS market_provider_receipts_no_replace BEFORE INSERT ON market_provider_receipts WHEN EXISTS(SELECT 1 FROM market_provider_receipts WHERE sequence=NEW.sequence) BEGIN SELECT RAISE(ABORT,'IMMUTABLE_PROVIDER_RECEIPT'); END;
 `;
 
-/** Server-owned, daily-only evidence collection. It never activates a plan or emits an entry signal. */
+/** Server-owned, bounded historical evidence collection. It never activates a plan or emits an entry signal. */
 export class MarketWorker {
   private readonly now: () => number;
+  private readonly minuteSymbols: string[];
+  private activeStream: StreamStatus | null = null;
   private readonly repository: BarRepository;
   private readonly interval: number;
   private readonly spacing: number;
@@ -176,6 +202,7 @@ export class MarketWorker {
   private initialized = false;
   private automatic = false;
   constructor(private readonly options: MarketWorkerOptions) {
+    this.minuteSymbols = parseMinuteSymbols(options.minuteSymbols?.join(","));
     this.now = options.now ?? Date.now;
     this.interval = bounded(
       options.pollIntervalMs,
@@ -186,6 +213,8 @@ export class MarketWorker {
     this.spacing = bounded(options.requestSpacingMs, 1000, 1000, 60_000);
     this.shutdownTimeout = bounded(options.shutdownTimeoutMs, 2000, 1, 5000);
     this.requestTimeout = bounded(options.requestTimeoutMs, 20_000, 1, 60_000);
+    // Create current tables first for isolated worker use; service upgrades run migration 8 before construction.
+    options.db.exec(MARKET_STREAM_SCHEMA_SQL);
     options.db.exec(MARKET_WORKER_SCHEMA_SQL);
     this.repository = new BarRepository(options.db);
     const row = options.db
@@ -195,6 +224,8 @@ export class MarketWorker {
       ...emptyMarketWorkerStatus(),
       ...(row ? JSON.parse(row.json) : {}),
       watermarks: [],
+      streams: [],
+      minuteSymbols: [...this.minuteSymbols],
     };
     this.current.liveEligible = false;
     this.current.providerQuotaVerified = false;
@@ -220,21 +251,33 @@ export class MarketWorker {
     if (this.current.reason === "CREDENTIALS_MISSING")
       this.current.state = "DISABLED";
     if (this.current.state === "DISABLED") this.current.nextPollAt = null;
-    this.save();
+    // Recover interrupted requests even when sampling is disabled after restart.
+    options.db
+      .transaction(() => {
+        options.db
+          .prepare(
+            `UPDATE market_worker_streams SET json=json_set(json,
+        '$.outcome','INTERRUPTED','$.lastErrorCode','WORKER_INTERRUPTED','$.lastFailureAt',?)
+        WHERE json_extract(json,'$.outcome')='PENDING'`,
+          )
+          .run(this.now());
+        this.save();
+      })
+      .immediate();
   }
   private save() {
     this.options.db
       .prepare(
         "INSERT INTO market_worker_state VALUES(1,?) ON CONFLICT(id) DO UPDATE SET json=excluded.json",
       )
-      .run(JSON.stringify({ ...this.current, watermarks: [] }));
+      .run(JSON.stringify({ ...this.current, watermarks: [], streams: [] }));
   }
   status(): MarketWorkerStatus {
     try {
       this.current.watermarks = (
         this.options.db
           .prepare(
-            "SELECT json FROM market_worker_watermarks ORDER BY instrument_id",
+            "SELECT json FROM market_worker_watermarks ORDER BY instrument_id,period",
           )
           .all() as { json: string }[]
       ).map((row) => {
@@ -242,6 +285,32 @@ export class MarketWorker {
           row.json,
         ) as Watermark;
         return publicMark;
+      });
+    } catch {
+      this.persistenceFailure();
+    }
+    try {
+      const selected = new Set(
+        this.options
+          .researchInstruments()
+          .filter(safeSymbol)
+          .map((x) => x.id),
+      );
+      this.current.streams = (
+        this.options.db
+          .prepare(
+            "SELECT json FROM market_worker_streams ORDER BY instrument_id,period",
+          )
+          .all() as { json: string }[]
+      ).map((row) => {
+        const stream = JSON.parse(row.json) as StreamStatus;
+        return {
+          ...stream,
+          selected:
+            selected.has(stream.instrumentId) &&
+            (stream.period === "1D" ||
+              this.minuteSymbols.includes(stream.symbol)),
+        };
       });
     } catch {
       this.persistenceFailure();
@@ -432,26 +501,47 @@ export class MarketWorker {
         .sort((a, b) => a.id.localeCompare(b.id));
       this.current.researchCount = instruments.length;
       for (const instrument of instruments) {
-        if (!(await this.admitRequest(instrument.symbol)) || this.stopped)
-          return;
-        const sampledBefore = this.options.db
-          .prepare(
-            "SELECT 1 FROM market_worker_watermarks WHERE instrument_id=?",
-          )
-          .get(instrument.id);
-        // Bootstrap research history once; later observations retain only a five-session correction overlap.
-        // This is bounded sampling, not a claim that older history or intraday continuity is complete.
-        const samples = await this.providerCall(() =>
-          this.adapter!.fetchBars(
-            instrument.symbol,
-            "1D",
-            sampledBefore ? 5 : 300,
-          ),
-        );
-        if (this.stopped) return;
-        if (samples.length > 1000)
-          throw new WorkerFailure("PROVIDER_SAMPLE_LIMIT");
-        for (const sample of samples) this.receive(sample, instrument);
+        const periods: SamplePeriod[] = this.minuteSymbols.includes(
+          instrument.symbol,
+        )
+          ? ["1D", "1m", "5m"]
+          : ["1D"];
+        for (const period of periods) {
+          // Re-read membership after waits so removal from the pool takes effect without restart.
+          if (!this.selected(instrument, period)) break;
+          const sampledBefore = this.options.db
+            .prepare(
+              "SELECT 1 FROM market_worker_watermarks WHERE instrument_id=? AND period=?",
+            )
+            .get(instrument.id, period);
+          const count =
+            period === "1D"
+              ? sampledBefore
+                ? 5
+                : 300
+              : period === "1m"
+                ? 300
+                : 60;
+          if (!(await this.admitRequest(instrument.symbol)) || this.stopped)
+            return;
+          if (!this.selected(instrument, period)) break;
+          this.beginStream(instrument, period, count);
+          const samples = await this.providerCall(() =>
+            this.adapter!.fetchBars(instrument.symbol, period, count),
+          );
+          if (this.stopped) return;
+          if (samples.length > count)
+            throw new WorkerFailure("PROVIDER_SAMPLE_LIMIT");
+          // Preserve raw samples even if membership changed while this request was in flight.
+          // Future requests re-check membership. No sample can activate a plan.
+          for (const sample of samples)
+            this.receive(sample, instrument, period);
+          this.finishStream(
+            samples.length ? "SAMPLED" : "EMPTY",
+            null,
+            samples.length,
+          );
+        }
       }
       this.current.lastSuccessAt = this.now();
       this.current.lastErrorCode = null;
@@ -469,6 +559,11 @@ export class MarketWorker {
         typeof (error as { code?: unknown })?.code === "string" &&
         String((error as { code: string }).code).startsWith("SQLITE_")
       ) {
+        try {
+          this.finishStream("FAILED", "PERSISTENCE_UNAVAILABLE");
+        } catch {
+          /* Storage may still be unavailable. */
+        }
         this.persistenceFailure();
         return;
       }
@@ -479,6 +574,12 @@ export class MarketWorker {
           : error instanceof WorkerFailure
             ? error.code
             : "PROVIDER_REQUEST_FAILED";
+      try {
+        this.finishStream("FAILED", this.current.lastErrorCode);
+      } catch {
+        this.persistenceFailure();
+        return;
+      }
       this.current.reason = this.current.lastErrorCode;
       this.current.consecutiveFailures++;
       this.current.state = "BACKOFF";
@@ -495,8 +596,77 @@ export class MarketWorker {
       }
     }
   }
-  private receive(sample: ProviderBarSample, instrument: Instrument) {
+  private selected(instrument: Instrument, period: SamplePeriod): boolean {
+    return (
+      (period === "1D" || this.minuteSymbols.includes(instrument.symbol)) &&
+      this.options
+        .researchInstruments()
+        .some(
+          (current) =>
+            current.id === instrument.id &&
+            current.symbol === instrument.symbol &&
+            current.market === instrument.market &&
+            safeSymbol(current),
+        )
+    );
+  }
+  private beginStream(
+    instrument: Instrument,
+    period: SamplePeriod,
+    requestedCount: number,
+  ): void {
+    const row = this.options.db
+      .prepare(
+        "SELECT json FROM market_worker_streams WHERE instrument_id=? AND period=?",
+      )
+      .get(instrument.id, period) as { json: string } | undefined;
+    const previous = row ? (JSON.parse(row.json) as StreamStatus) : null;
+    this.activeStream = {
+      instrumentId: instrument.id,
+      symbol: instrument.symbol,
+      period,
+      requestedCount,
+      lastAttemptAt: this.now(),
+      lastSuccessAt: previous?.lastSuccessAt ?? null,
+      lastFailureAt: previous?.lastFailureAt ?? null,
+      lastErrorCode: null,
+      lastQuarantineReason: null,
+      outcome: "PENDING",
+      lastSampleCount: 0,
+    };
+    this.saveStream();
+  }
+  private saveStream(): void {
+    const stream = this.activeStream!;
+    this.options.db
+      .prepare(
+        `INSERT INTO market_worker_streams VALUES(?,?,?)
+      ON CONFLICT(instrument_id,period) DO UPDATE SET json=excluded.json`,
+      )
+      .run(stream.instrumentId, stream.period, JSON.stringify(stream));
+  }
+  private finishStream(
+    outcome: StreamStatus["outcome"],
+    error: string | null,
+    count?: number,
+  ): void {
+    if (!this.activeStream) return;
+    this.activeStream.outcome = outcome;
+    this.activeStream.lastErrorCode = error;
+    if (count !== undefined) this.activeStream.lastSampleCount = count;
+    if (outcome === "SAMPLED" || outcome === "EMPTY")
+      this.activeStream.lastSuccessAt = this.now();
+    else this.activeStream.lastFailureAt = this.now();
+    this.saveStream();
+    this.activeStream = null;
+  }
+  private receive(
+    sample: ProviderBarSample,
+    instrument: Instrument,
+    period: SamplePeriod,
+  ) {
     const priorStatus = structuredClone(this.current);
+    const priorStream = structuredClone(this.activeStream);
     try {
       this.options.db
         .transaction(() => {
@@ -508,7 +678,7 @@ export class MarketWorker {
           const observedAt = this.now();
           const validReceipt =
             sample.symbol === instrument.symbol &&
-            sample.period === "1D" &&
+            sample.period === period &&
             Number.isSafeInteger(sample.timestamp) &&
             sample.timestamp >= 0 &&
             Number.isSafeInteger(sample.receivedAt) &&
@@ -527,9 +697,9 @@ export class MarketWorker {
           let invalidation: WorkerInvalidation["reason"] | undefined;
           const oldRow = this.options.db
             .prepare(
-              "SELECT json FROM market_worker_watermarks WHERE instrument_id=?",
+              "SELECT json FROM market_worker_watermarks WHERE instrument_id=? AND period=?",
             )
-            .get(instrument.id) as { json: string } | undefined;
+            .get(instrument.id, period) as { json: string } | undefined;
           const previous = oldRow
             ? (JSON.parse(oldRow.json) as Watermark)
             : null;
@@ -538,6 +708,9 @@ export class MarketWorker {
               throw new MarketDataError("SAMPLE_IDENTITY_OR_TIME_INVALID");
             if (sample.finality !== "CONFIRMED")
               throw new MarketDataError("FINALITY_UNVERIFIED");
+            // Minute histories remain quarantined even if a test resolver can verify daily evidence.
+            if (period !== "1D")
+              throw new MarketDataError("MINUTE_EVIDENCE_UNVERIFIED");
             evidence = this.options.verifySample?.(sample, instrument) ?? null;
             if (!evidence)
               throw new MarketDataError("AUDITED_EVIDENCE_REQUIRED");
@@ -614,6 +787,12 @@ export class MarketWorker {
               at: observedAt,
               ingestSequence: normalizedSequence!,
             });
+          if (this.activeStream) {
+            this.activeStream.lastSampleCount++;
+            if (status === "QUARANTINED")
+              this.activeStream.lastQuarantineReason = reason;
+            this.saveStream();
+          }
           this.current.sampleCount++;
           if (status === "QUARANTINED") {
             this.current.quarantinedCount++;
@@ -625,6 +804,7 @@ export class MarketWorker {
           this.current.latestReceiptSequence = Number(inserted.lastInsertRowid);
           const next: Watermark = {
             instrumentId: instrument.id,
+            period,
             providerTimestamp: Math.max(
               previous?.providerTimestamp ?? 0,
               sample.timestamp,
@@ -644,14 +824,15 @@ export class MarketWorker {
           if (validReceipt)
             this.options.db
               .prepare(
-                "INSERT INTO market_worker_watermarks VALUES(?,?) ON CONFLICT(instrument_id) DO UPDATE SET json=excluded.json",
+                "INSERT INTO market_worker_watermarks VALUES(?,?,?) ON CONFLICT(instrument_id,period) DO UPDATE SET json=excluded.json",
               )
-              .run(instrument.id, JSON.stringify(next));
+              .run(instrument.id, period, JSON.stringify(next));
           this.save();
         })
         .immediate();
     } catch (error) {
       this.current = priorStatus;
+      this.activeStream = priorStream;
       throw error;
     }
   }
@@ -676,6 +857,7 @@ export class MarketWorker {
       ]);
       if (deadline) clearTimeout(deadline);
     }
+    this.finishStream("INTERRUPTED", "WORKER_STOPPED");
     this.current.state = "STOPPED";
     this.current.reason = "WORKER_STOPPED";
     this.current.nextPollAt = null;
@@ -711,6 +893,7 @@ export function createMarketWorkerFromEnvironment(
       store.listInstruments().map((row) => row.instrument),
     enabled: env.PULLBACK_MARKET_WORKER === "1",
     credentialsPresent,
+    minuteSymbols: parseMinuteSymbols(env.PULLBACK_MINUTE_SYMBOLS),
     adapterFactory: async () => {
       const { LongbridgeReadOnlyAdapter } =
         await import("../../packages/market-data/longbridge.js");
