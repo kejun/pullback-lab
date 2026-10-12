@@ -204,6 +204,16 @@ export class Store {
   }
   deleteInstrument(id: string) {
     this.instrument(id);
+    if (
+      this.db
+        .prepare("SELECT 1 FROM corporate_action_snapshots WHERE instrument_id=? LIMIT 1")
+        .get(id)
+    )
+      throw new ApiError(
+        409,
+        "INSTRUMENT_HAS_ACTION_EVIDENCE",
+        "标的已有公司行动证据，请保留证券及其不可变历史；可修改观察笔记",
+      );
     if (this.plans().some((p) => p.instrumentId === id))
       throw new ApiError(
         409,
