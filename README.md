@@ -17,7 +17,7 @@ npm run dev
 
 打开 <http://127.0.0.1:5173>，输入访问密码。默认数据库为 `data/pullback.sqlite`。真实空白研究环境不设置 `PULLBACK_DEMO`。
 
-演示流程：打开设置 → 载入合成示例数据 → 填入并确认合成资金 → 确认筛选预设 → 选择 `DEMO-A.US` → 填入合成示例计划并确认研究背景 → 保存 → 检查风险 → 启用合成计划观察 → 运行合成回放 → 在提醒与记录中填写反馈。固定样本的交易日为 `2026-10-09`，其结果始终是历史合成事件。
+演示流程：打开设置 → 载入合成示例数据 → 填入并确认合成资金 → 确认筛选预设 → 选择 `DEMO-A.US` → 填入合成示例计划并确认研究背景 → 保存 → 检查风险 → 启用合成计划观察 → 运行合成回放 → 在提醒与记录中填写反馈。也可在启用观察后选择「准备分步合成演练」，逐条推进并查看持久进度；一次尝试只能选择一种回放方式。固定样本的交易日为 `2026-10-09`，其结果始终是历史合成事件。
 
 ```bash
 npm run typecheck
@@ -62,6 +62,7 @@ npm run probe -- --symbols AAPL.US --observe-seconds 30
 - [接口契约](docs/api-contract.md)
 - [验收与未完成范围](docs/acceptance.md)
 - [第二批实现与验证](docs/acceptance-v2.md)
+- [第三批实现与验证](docs/acceptance-v3.md)
 - [私有部署与备份恢复](docs/operations.md)
 
 Linear 项目：<https://linear.app/kejunz/project/pullback-lab-回调交易研究-018616dd62c7>。

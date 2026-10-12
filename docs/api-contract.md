@@ -14,13 +14,19 @@
 - POST /api/plans/support-preview {instrumentId,anchorTime,primarySupport,supportSelections,sessionDate?} → SupportSnapshot；只接受支撑选择，EMA/ATR/AVWAP 价格与 ready 状态均由服务端核算
 - POST /api/plans/:id/risk → RiskResult；POST /api/plans/:id/activate {expectedVersion} → {plan:Plan,risk:RiskResult}；POST /api/plans/:id/pause {expectedVersion} → Plan
 - POST /api/funds {...Funds,expectedGeneration:number} → Funds（新建 expectedGeneration=0）
-- GET /api/events → {events:DecisionEvent[]}；GET /api/events/stream → SSE data: DecisionEvent、id: event_id
+- POST /api/instruments/:id/price-proposal {kind:'POINT',displayPrice:string} 或 {kind:'STEP',price:string,steps:integer} → {price,tick,instrumentRevision,rounded,basis}；按服务端证券 tick 规范化，仅返回草稿提议，不写计划
+- GET /api/events?limit=50&before=cursor 或 &after=cursor → EventPage；最多 50 条 DecisionEventSummary，含 counts、beforeCursor、afterCursor、feedCursor、feedEpoch、feedRevision
+- GET /api/events/:id → DecisionEvent；完整冻结依据仅按需读取
+- GET /api/events/stream?after=feedCursor → SSE event: events、data: EventFeedBatch、id: feedCursor；重连优先使用 Last-Event-ID；游标失效发 event: reset 并关闭连接，登录失效发 event: auth-expired
 - POST /api/events/:id/read → {ok:true}
 - POST /api/events/:id/feedback {kind:'TAKEN'|'SKIPPED',note,actualPrice?,actualQuantity?,actualTime?,expectedRevisionId?} → {ok:true}；界面提交当前已读版本，无历史时传 null，过期版本返回 409 并保留草稿
 - GET /api/events/:id/feedback → {revisions:FeedbackRevision[]}；追加修订，保留实际输入和偏离原因，不改写原事件
 - GET /api/events/:id/input → 归档判断输入
 - GET /api/events/:id/replay → {status:'MATCH'|'MISMATCH'|'UNSUPPORTED',checks,reasons,original,replayed,inputHash,algorithmVersion,coverage}；校验原始 JSON 哈希后重放，不写入记录、通知或资金
 - GET /api/market/status → MarketWorkerStatus；采样状态与水位独立于实时能力，liveEligible=false
+- GET /api/demo/plans/:id/runtime → {runtime:RuntimeProgress|null}（仅演示模式）
+- POST /api/demo/plans/:id/runtime/start {expectedVersion,expectedAttemptId} → {runtime:RuntimeProgress}；只准备服务端合成序列
+- POST /api/demo/plans/:id/runtime/step {expectedVersion,expectedAttemptId,expectedStep,count?:1..20} → {runtime:RuntimeProgress}；逐输入原子提交，进度冲突返回 409；不接受客户端行情或门控结论
 - POST /api/demo/plans/:id/replay（仅演示模式）→ {events:DecisionEvent[]} 产生明确标记的合成回放结果，不伪装实时信号
 
 所有写请求携带 X-Requested-With: PullbackLab。命令可携带 Idempotency-Key；生产通过 Cookie 会话认证。前端遇到409保留表单输入并要求重新读取。
