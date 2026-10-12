@@ -18,7 +18,8 @@
     "backup": "node --import tsx scripts/backup.ts",
     "restore": "node --import tsx scripts/restore.ts",
     "benchmark": "node --import tsx scripts/benchmark.ts",
-    "format": "prettier --write apps packages scripts tests *.ts"
+    "format": "prettier --write apps packages scripts tests *.ts",
+    "basis:audit": "node --import tsx scripts/audit-price-basis.ts"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.3",

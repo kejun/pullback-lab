@@ -82,6 +82,13 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   },
   { version: 5, apply: migrateScreeningRules },
   { version: 6, apply: (db) => db.exec(ACTION_EVIDENCE_SCHEMA_SQL) },
+  {
+    version: 7,
+    apply: (db) =>
+      db.exec(
+        "CREATE INDEX market_raw_identity_sequence ON market_raw_inputs(logical_key,ingest_sequence)",
+      ),
+  },
 ];
 
 /** All pending DDL and version records commit together, or all roll back. */
