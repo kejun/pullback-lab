@@ -10,6 +10,8 @@ import {
   generateDemoBars,
 } from "../../../packages/market-data/fixtures.js";
 import { Store } from "../store.js";
+import { actionTestManifest } from "../../../packages/market-data/action-evidence-fixture.js";
+import { ActionEvidenceRepository } from "../../../packages/market-data/action-evidence.js";
 
 const now = Date.parse("2026-10-12T10:00:00Z");
 const sessionOpenAt = Date.parse("2026-10-09T13:30:00Z");
@@ -114,6 +116,61 @@ function immutableRows(store: Store) {
 }
 
 describe("reservation lifecycle boundaries", () => {
+  it("imports action evidence and pauses active plans atomically without changing frozen inputs or reservations", () => {
+    const store = setup(),
+      plan = activate(store),
+      m = actionTestManifest();
+    const frozen = store.planVersion(plan),
+      reserves = store.reservations();
+    const beforeEvents = store.events();
+    expect(store.importActionEvidence(m, now, true).status).toBe("PREVIEW");
+    expect(store.plan(plan.id).status).toBe("WAIT_RETEST");
+    store.db.exec(
+      "CREATE TRIGGER reject_action_pause BEFORE INSERT ON decision_events BEGIN SELECT RAISE(ABORT,'pause unavailable'); END;",
+    );
+    expect(() => store.importActionEvidence(m, now)).toThrow(
+      "pause unavailable",
+    );
+    expect(
+      new ActionEvidenceRepository(store.db).latest(m.instrumentId),
+    ).toBeNull();
+    expect(store.plan(plan.id).status).toBe("WAIT_RETEST");
+    expect(store.events()).toEqual(beforeEvents);
+    store.db.exec("DROP TRIGGER reject_action_pause");
+    const imported = store.importActionEvidence(m, now);
+    expect(imported.status).toBe("IMPORTED");
+    expect(store.plan(plan.id).status).toBe("DATA_PAUSED");
+    expect(store.planVersion(plan)).toEqual(frozen);
+    expect(store.reservations()).toEqual(reserves);
+    expect(
+      store
+        .events()
+        .some(
+          (e) =>
+            e.type === "DATA_PAUSED" &&
+            e.reasons.includes("CORPORATE_ACTION_EVIDENCE_CHANGED"),
+        ),
+    ).toBe(true);
+    const events = store.events();
+    expect(
+      events.find((e) => e.type === "DATA_PAUSED")?.snapshot
+        .corporateActionEvidenceVersion,
+    ).toBe(imported.version);
+    expect(store.importActionEvidence(m, now + 1).status).toBe("DUPLICATE");
+    expect(store.events()).toEqual(events);
+  });
+  it("keeps TAKEN_PENDING when new corporate action evidence arrives", () => {
+    const store = setup(),
+      plan = activate(store),
+      event = trigger(store, plan);
+    store.feedback(event.id, { kind: "TAKEN", note: "合成" }, now);
+    const pending = store.reservations(),
+      facts = immutableRows(store);
+    store.importActionEvidence(actionTestManifest(), now);
+    expect(store.reservations()).toEqual(pending);
+    expect(store.plan(plan.id).status).toBe("TAKEN");
+    expect(immutableRows(store)).toEqual(facts);
+  });
   it("keeps reported trades locked across editing, pausing and expiry until funds reconciliation", () => {
     const store = setup();
     const plan = activate(store);

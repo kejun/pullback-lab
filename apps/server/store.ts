@@ -35,6 +35,7 @@ import {
   makeScreeningRule,
 } from "./screening-settings.js";
 import { initializeDatabase } from "./migrations.js";
+import { ActionEvidenceRepository } from "../../packages/market-data/action-evidence.js";
 import { eventPage, eventFeed, type EventPageQuery } from "./events-feed.js";
 
 export class ApiError extends Error {
@@ -103,6 +104,19 @@ export class Store {
   }
   transaction<T>(work: () => T): T {
     return this.db.transaction(work).immediate();
+  }
+  importActionEvidence(input: unknown, now: number, dryRun = false) {
+    return new ActionEvidenceRepository(this.db).import(input, now, {
+      dryRun,
+      onChanged: (instrumentId, version) =>
+        this.invalidateEvidence(
+          instrumentId,
+          "CORPORATE_ACTION_EVIDENCE_CHANGED",
+          now,
+          false,
+          { corporateActionEvidenceVersion: version },
+        ),
+    });
   }
   setting(key: string): string | null {
     return (
@@ -288,6 +302,7 @@ export class Store {
     reason: string,
     now: number,
     onlyChanged = false,
+    evidence: Record<string, unknown> = {},
   ) {
     return this.transaction(() => {
       for (const p of this.plans()) {
@@ -313,6 +328,7 @@ export class Store {
           null,
           true,
           {
+            ...evidence,
             planVersion: this.planVersion(p),
             reason: planReason,
             synthetic: p.instrumentId.startsWith("DEMO-"),
