@@ -383,7 +383,9 @@ test("manual history stays preview-only until confirmed, drives all charts, and 
   await chartEvidence(page).screenshot({
     path: test.info().outputPath("research-history-desktop-chart-evidence.png"),
   });
-  const candleChart = page.locator(".chart-container").getByRole("img");
+  const candleChart = page.locator(".chart-container").getByRole("img", {
+    name: /蜡烛图，包含均线、锚定均价和交易计划价格线/,
+  });
   await expect(page.locator(".chart-loading")).toHaveCount(0);
   await expect(candleChart.locator("canvas").first()).toBeVisible();
   await revealUncovered(candleChart);
