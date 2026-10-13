@@ -68,3 +68,9 @@ PlanInput.supportSelections 可选 EMA9/EMA21/EMA50/AVWAP，或带 id、label、
 - 计划与支撑预览可携 `researchHistoryId`。保存计划必须明确指定当前资料，冻结版本和支撑；无权据此启动真实提醒。
 
 manifest 最大 2 MiB、3000 根，严格字段契约与例子见 `docs/research-history.md`。原始来源接收时间不能由客户端提供，历史 AVWAP 是事后重建，不能当作当时已知的决策输入。
+
+## 正式闭合分钟运行
+
+生产默认无可信适配器。既有 `POST /api/plans/:id/activate` 对非演示计划调用正式运行器，仍受当前服务端证据、会话、资金及 CAS/幂等检查约束。客户端提交的能力声明不会授权启用。
+
+`GET /api/plans/:id/monitor` 返回连接/逐标可用性与持久进度；`POST /api/plans/:id/monitor/recover` 接受 expectedVersion、expectedAttemptId、sourceAttemptId、expectedWatermark，建立明确的新恢复尝试。两者沿用统一鉴权和写入保护。没有行情输入或来源证明上传端点。完整时间、信任与恢复语义见 closed-bar-runtime.md。
