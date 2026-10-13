@@ -1,6 +1,6 @@
 # Longbridge 正式闭合适配器：已接线代码与待验收事实
 
-`LongbridgeClosedBarAdapter` 是 SDK 5.2.0 的真实只读运输实现。其输出直接进入已有 `ClosedBarRuntime`，不是另一个采样 CLI。当前交付只用 SDK 形状的隔离模拟验证；没有配置实际凭据、连接真实供应商、购买权限或部署目标主机。默认 `npm start` 不安装此适配器，两市场仍为 UNKNOWN。
+`LongbridgeClosedBarAdapter` 是 SDK 5.2.0 的真实只读运输实现。其输出直接进入已有 `ClosedBarRuntime`，不是另一个采样 CLI。当前交付只用 SDK 形状的隔离模拟验证；没有配置实际凭据、连接真实供应商、购买权限或部署目标主机。默认 `npm start` 不安装此适配器，两市场仍为 UNKNOWN。主入口现有静态审计服务器配置槽和 `market:check`，详见 [生产装配与本机检查](production-market.md)；单独设置环境开关不能授予能力。
 
 ## 服务器信任边界
 
