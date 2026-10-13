@@ -2,6 +2,7 @@ import type { Instrument } from "../../packages/contracts/index.js";
 import type { CapabilityEvidence } from "../../packages/market-data/capabilities.js";
 import {
   adjustForScheduledSession,
+  adjustForSplits,
   type AdjustmentDataset,
 } from "../../packages/market-data/adjustments.js";
 import {
@@ -36,7 +37,19 @@ export interface LongbridgeContextInput {
   calendarDays: readonly CalendarDay[];
   /** Explicit audited mapping; canonical intervals are the backwards-compatible default, never inferred from a timestamp. */
   dailyTimestampAnchor?: "SESSION_INTERVAL" | "MARKET_LOCAL_MIDNIGHT";
-  rawDaily: readonly (Omit<RawBar, "end"> & { end?: number })[];
+  rawDaily: readonly (Omit<RawBar, "end"> & {
+    end?: number;
+    providerOrigin?: {
+      captureHash: string;
+      endpoint: string;
+      rawVolume: string;
+      rawVolumeUnit: "UNVERIFIED";
+      reviewedVolumeUnit: "SHARE" | "LOT";
+      sharesPerLot?: number;
+      endpointReviewId: string;
+      rawFinality: string;
+    };
+  })[];
   adjustments: AdjustmentDataset;
 }
 export class ProductionMarketError extends Error {
@@ -60,6 +73,16 @@ export function buildLongbridgeContext(
   input: LongbridgeContextInput,
   now: number,
 ): ClosedBarContext {
+  const context = buildLongbridgeDailyHistory(input, now, false);
+  validateClosedContext(context, now);
+  return context;
+}
+/** Shared historical normalization; callers must independently validate their exact use capability. */
+export function buildLongbridgeDailyHistory(
+  input: LongbridgeContextInput,
+  now: number,
+  completedBasisDay: boolean,
+): ClosedBarContext {
   const c = structuredClone(input);
   const anchor = c.dailyTimestampAnchor ?? "SESSION_INTERVAL";
   if (!["SESSION_INTERVAL", "MARKET_LOCAL_MIDNIGHT"].includes(anchor))
@@ -75,7 +98,7 @@ export function buildLongbridgeContext(
     through = dateAt(c.basisDate);
   const days = (through - from) / 86_400_000 + 1;
   if (
-    days < 251 ||
+    days < (completedBasisDay ? 250 : 251) ||
     days > 15000 ||
     c.calendarDays.length > 30000 ||
     c.rawDaily.length < 250 ||
@@ -120,7 +143,13 @@ export function buildLongbridgeContext(
     );
     if (!resolved.ok) fail("HISTORY_CALENDAR_UNVERIFIED");
     selectedCalendar.push(records[0]);
-    if (date === c.basisDate) {
+    if (completedBasisDay) {
+      if (resolved.session) {
+        if (resolved.session.close > now) fail("HISTORY_BASIS_NOT_COMPLETED");
+        sessions.set(resolved.session.id, resolved.session);
+        target = resolved.session;
+      }
+    } else if (date === c.basisDate) {
       if (!resolved.session) fail("HISTORY_TARGET_CLOSED");
       target = resolved.session!;
     } else if (resolved.session)
@@ -168,6 +197,9 @@ export function buildLongbridgeContext(
             : { ...raw, end: raw.end! };
         return {
           ...normalizeBar(interval, session!),
+          ...(raw.providerOrigin
+            ? { providerOrigin: structuredClone(raw.providerOrigin) }
+            : {}),
           // Preserve the original label as provenance. Canonical start/end come
           // only from this date's explicit calendar, never today's hours.
           providerTimestamp: raw.start,
@@ -203,12 +235,9 @@ export function buildLongbridgeContext(
     )
       fail("HISTORY_ACTION_INSIDE_DAILY_BAR");
   }
-  const adjusted = adjustForScheduledSession(
-    bars,
-    c.adjustments,
-    now,
-    targetSession,
-  );
+  const adjusted = completedBasisDay
+    ? adjustForSplits(bars, c.adjustments, now, targetSession.close)
+    : adjustForScheduledSession(bars, c.adjustments, now, targetSession);
   if (!adjusted.ok) fail("HISTORY_ADJUSTMENT_UNVERIFIED");
   const context: ClosedBarContext = {
     source: LONGBRIDGE_SOURCE,
@@ -223,15 +252,14 @@ export function buildLongbridgeContext(
       sequenceContractVerified: false,
       continuousTradesVerified: false,
     },
-    calendar: selectedCalendar.at(-1)!,
+    calendar: selectedCalendar.find((d) => d.date === targetSession.date)!,
     daily: adjusted.bars.map((b) => ({ ...b, synthetic: false as const })),
-    basisDate: c.basisDate,
+    basisDate: targetSession.date,
     basisKnownAt: Math.max(
       adjusted.knownAt,
       ...bars.map((b) => b.receivedAt),
       ...selectedCalendar.map((d) => d.knownAt),
     ),
   };
-  validateClosedContext(context, now);
   return context;
 }
