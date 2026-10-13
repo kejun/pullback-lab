@@ -2,6 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 // Each scenario has its own service and temporary SQLite database. A chart-only
 // test must not pre-confirm settings or seed plans for the research acceptance flow.
+// Port 4190 is blocked by browsers (Sieve); keep the provider fixture on 4191.
 const scenarios = [
   "research",
   "chart",
@@ -13,6 +14,7 @@ const scenarios = [
   "market-sampling",
   "research-history",
   "formal-monitor",
+  "provider-research",
 ] as const;
 
 export default defineConfig({
@@ -25,7 +27,9 @@ export default defineConfig({
   projects: scenarios.map((name, index) => ({
     name,
     testMatch: `**/${name}.spec.ts`,
-    use: { baseURL: `http://127.0.0.1:${4180 + index}` },
+    use: {
+      baseURL: `http://127.0.0.1:${name === "provider-research" ? 4191 : 4180 + index}`,
+    },
   })),
   use: {
     actionTimeout: 10_000,
@@ -40,11 +44,16 @@ export default defineConfig({
       : undefined,
   },
   webServer: scenarios.map((name, index) => ({
-    command: name === "formal-monitor" ? "node --import tsx scripts/e2e-formal-monitor.ts" : "node --import tsx scripts/e2e-server.ts",
-    url: `http://127.0.0.1:${4180 + index}/api/health`,
+    command:
+      name === "provider-research"
+        ? "node --import tsx scripts/e2e-provider-research.ts"
+        : name === "formal-monitor"
+          ? "node --import tsx scripts/e2e-formal-monitor.ts"
+          : "node --import tsx scripts/e2e-server.ts",
+    url: `http://127.0.0.1:${name === "provider-research" ? 4191 : 4180 + index}/api/health`,
     reuseExistingServer: false,
     env: {
-      PORT: String(4180 + index),
+      PORT: String(name === "provider-research" ? 4191 : 4180 + index),
       HOST: "127.0.0.1",
       PULLBACK_PASSWORD: "e2e-only-password",
       PULLBACK_DEMO: "1",
