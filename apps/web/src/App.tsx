@@ -39,6 +39,7 @@ import type {
 import type { ChartPriceProposal, PlanPriceField } from "./chart-price";
 import { useEventFeed } from "./useEventFeed";
 import { SyntheticRuntime } from "./SyntheticRuntime";
+import { FormalMonitor } from "./FormalMonitor";
 import { SupportEditor } from "./SupportEditor";
 import { PlanControlsEditor, feeFields } from "./PlanControlsEditor";
 import { MarketStatus } from "./MarketStatus";
@@ -2643,7 +2644,7 @@ export default function App() {
                           >
                             检查风险数量
                           </button>
-                          {savedPlan &&
+                          {(!savedPlan || isSyntheticPlan) && (savedPlan &&
                           ["WAIT_RETEST", "ARMED", "ACTIVE"].includes(
                             savedPlan.status,
                           ) ? (
@@ -2756,16 +2757,25 @@ export default function App() {
                               }
                             >
                               <Icon name="play" size={15} />
-                              {boot.demo ? "启用合成计划观察" : "启用观察"}
+                              {isSyntheticPlan ? "启用合成计划观察" : "保存后启用观察"}
                             </button>
-                          )}
+                          ))}
                         </div>
+                        {savedPlan && !isSyntheticPlan && (
+                          <FormalMonitor
+                            key={`formal:${runtimeKey}`}
+                            plan={savedPlan}
+                            disabled={busy || dirty || Boolean(chartHistoryOverride) || conflictReview?.target.kind === "plan"}
+                            onBusyChange={setBusy}
+                            onChanged={() => refresh(true)}
+                          />
+                        )}
                         {savedPlan && !savedPlan.supportSnapshot?.ready && (
                           <small className="disabled-reason">
                             已保存版本缺少完整支撑证据。请选择有效家族并保存新版本。
                           </small>
                         )}
-                        {!!monitorUnavailable && (
+                        {!!monitorUnavailable && (!savedPlan || isSyntheticPlan) && (
                           <small className="disabled-reason">
                             {monitorUnavailable}
                           </small>
@@ -2795,7 +2805,7 @@ export default function App() {
                               onChanged={() => refresh(true)}
                             />
                           )}
-                        {boot.demo && savedPlan && (
+                        {isSyntheticPlan && savedPlan && (
                           <button
                             className="text-button replay-button"
                             disabled={
