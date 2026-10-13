@@ -1,3 +1,4 @@
+import type { ObservationClock } from "./runtime-observation.js";
 import { ClosedBarRuntime } from "./closed-bar-runtime.js";
 import {
   trustedClosedSupport,
@@ -59,6 +60,8 @@ export interface AppOptions {
   password?: string;
   demo?: boolean;
   now?: () => number;
+  /** Server-only process clock injection; never accepted from HTTP. */
+  observationClock?: ObservationClock;
   origin?: string;
   secureCookies?: boolean;
   logger?: boolean;
@@ -250,7 +253,11 @@ export async function createApp(
     store.close();
     throw error;
   }
-  const monitor = new ClosedBarRuntime(store, { now, adapter });
+  const monitor = new ClosedBarRuntime(store, {
+    now,
+    adapter,
+    observationClock: options.observationClock,
+  });
   app.decorate("monitor", monitor);
   await app.register(cookie);
   const auth = (request: FastifyRequest) => {
@@ -441,6 +448,17 @@ export async function createApp(
       );
   }
   function command<T>(request: FastifyRequest, execute: () => T): T {
+    monitor.checkObservation();
+    try {
+      return transactionalCommand(request, execute);
+    } finally {
+      monitor.checkObservation();
+    }
+  }
+  function transactionalCommand<T>(
+    request: FastifyRequest,
+    execute: () => T,
+  ): T {
     const key = request.headers["idempotency-key"];
     // The attempt check and its write share the same lock even without a retry key.
     if (!key) return store.transaction(execute);
