@@ -224,6 +224,17 @@ export function FormalMonitor({
       {controls.evidenceReason && (
         <p className="support-warning">{controls.evidenceReason}</p>
       )}
+      {controls.sessionUnknown && (
+        <p className="support-warning">
+          旧状态缺少会话身份；无法启用或恢复，请读取最新服务端状态。
+        </p>
+      )}
+      {controls.historicalOnly && (
+        <p className="field-explanation">
+          以下为较早会话 {progress?.sessionDate} 的只读历史；当前计划会话为{" "}
+          {plan.sessionDate}。旧尝试不能用于当前会话恢复。
+        </p>
+      )}
       {controls.identityMismatch && (
         <p className="support-warning" role="alert">
           服务端尝试与当前计划版本不一致。请读取最新监测状态，核对后再操作。
@@ -262,6 +273,7 @@ export function FormalMonitor({
           ["WAIT_RETEST", "ARMED"].includes(plan.status) &&
           progress.phase === "RUNNING" &&
           progress.current &&
+          controls.sameSession &&
           !needsRefresh &&
           !controls.capabilityReason
             ? "收盘确认"
@@ -278,6 +290,8 @@ export function FormalMonitor({
       {progress ? (
         <>
           <dl className="detail-list">
+            <dt>尝试会话</dt>
+            <dd>{progress.sessionDate ?? "未知"}</dd>
             <dt>尝试身份</dt>
             <dd>
               {progress.template === "RECOVERY"
@@ -327,7 +341,7 @@ export function FormalMonitor({
         </p>
       )}
       <div className="monitor-actions">
-        {!progress && !plan.attemptId && (
+        {(!progress || controls.historicalOnly) && !plan.attemptId && (
           <button
             type="button"
             className="button primary full"
@@ -337,7 +351,7 @@ export function FormalMonitor({
             {actionLabels.activate}
           </button>
         )}
-        {(progress || plan.attemptId) && (
+        {((progress && !controls.historicalOnly) || plan.attemptId) && (
           <button
             type="button"
             className="button primary full"

@@ -195,6 +195,7 @@ export class ClosedBarRuntime {
     return {
       attemptId: row.attempt_id,
       planVersion: row.plan_version,
+      sessionDate: this.context(row.context_id).session.date,
       phase: row.phase,
       status: s.status,
       reason: s.reason,

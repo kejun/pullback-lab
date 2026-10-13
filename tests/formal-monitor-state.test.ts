@@ -11,6 +11,7 @@ const plan = {
   id: "p",
   version: 2,
   instrumentId: "US-A",
+  sessionDate: "2026-10-09",
   status: "DRAFT",
   attemptId: null,
   mode: "CLOSE_CONFIRM",
@@ -31,6 +32,7 @@ const snapshot: MonitorSnapshot = {
 const progress: NonNullable<MonitorSnapshot["progress"]> = {
   attemptId: "a",
   planVersion: 2,
+  sessionDate: "2026-10-09",
   phase: "DATA_PAUSED",
   status: "DATA_PAUSED",
   reason: "MISSING_MINUTE",
@@ -151,5 +153,36 @@ describe("monitor read lifecycle", () => {
     expect(reads.begin()).toBeNull();
     expect(reads.finish(remounted)).toBe(true);
     expect(reads.begin()).not.toBeNull();
+  });
+});
+
+it("allows a new session-first plan but never reuses a same-session attempt", () => {
+  const previous = { ...progress, current: false, status: "EXPIRED" as const };
+  const next = { ...plan, version: 3, sessionDate: "2026-10-12" };
+  expect(
+    formalMonitorControls(next, { ...snapshot, progress: previous }),
+  ).toMatchObject({
+    canActivate: true,
+    canRecover: false,
+    historicalOnly: true,
+  });
+  expect(
+    formalMonitorControls(
+      { ...next, sessionDate: plan.sessionDate },
+      { ...snapshot, progress: previous },
+    ),
+  ).toMatchObject({
+    canActivate: false,
+    canRecover: false,
+    historicalOnly: false,
+  });
+  const legacy = { ...previous };
+  delete (legacy as Partial<typeof legacy>).sessionDate;
+  expect(
+    formalMonitorControls(next, { ...snapshot, progress: legacy }),
+  ).toMatchObject({
+    canActivate: false,
+    canRecover: false,
+    sessionUnknown: true,
   });
 });

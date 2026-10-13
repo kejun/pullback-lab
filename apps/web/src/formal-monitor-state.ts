@@ -13,6 +13,15 @@ export function formalMonitorControls(
 ) {
   const availability = snapshot?.availability;
   const progress = snapshot?.progress;
+  const sameSession = Boolean(
+    progress && progress.sessionDate === plan.sessionDate,
+  );
+  const historicalOnly = Boolean(
+    progress &&
+    typeof progress.sessionDate === "string" &&
+    progress.sessionDate !== plan.sessionDate,
+  );
+  const sessionUnknown = Boolean(progress && !progress.sessionDate);
   const instrument = availability?.instruments.find(
     (row) => row.instrumentId === plan.instrumentId,
   );
@@ -53,6 +62,7 @@ export function formalMonitorControls(
     ].includes(plan.status) ||
     Boolean(
       progress &&
+      sameSession &&
       [
         "TRIGGERED",
         "ENTRY_TRIGGERED",
@@ -71,10 +81,13 @@ export function formalMonitorControls(
     evidenceReason,
     reason,
     identityMismatch,
+    sameSession,
+    historicalOnly,
+    sessionUnknown,
     canActivate: Boolean(
       snapshot &&
       !reason &&
-      !progress &&
+      (!progress || historicalOnly) &&
       !plan.attemptId &&
       plan.status === "DRAFT",
     ),
@@ -82,6 +95,7 @@ export function formalMonitorControls(
       snapshot &&
       !reason &&
       progress &&
+      sameSession &&
       !identityMismatch &&
       !finished &&
       paused,
