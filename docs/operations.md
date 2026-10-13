@@ -102,3 +102,7 @@ dc up -d --force-recreate --wait --wait-timeout 120 app
 ## 人工公司行动证据
 
 预览、修订、撤回、暂停计划与历史读取步骤见 [公司行动证据导入](corporate-actions.md)。默认只读预览，显式 `--apply` 需要停止服务并取得同一数据库的进程锁。数据库结构升级为6；正常启动或显式导入都会沿用迁移前备份保护。证据材料随 SQLite 备份保存，导入成功不改变真实行情能力。
+
+## 本机只读验收与恢复副本
+
+已运行的 npm 部署可用 `npm run acceptance:local -- --output-dir NEW_DIRECTORY --summary` 收集本机版本、匿名 API/SSE 安全边界与一致备份/新文件恢复证据。源数据库只读，状态失效仅发生于新增恢复副本；报告脱敏，完整数据库副本必须留在本地。无样本项目不会冒充通过，公网 TLS、休眠断网与真实行情仍独立验收。路径、参数和验收边界见[本机非破坏性验收](local-acceptance.md)。
