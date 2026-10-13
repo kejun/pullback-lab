@@ -64,6 +64,7 @@ export function calculateClosedRisk(input: ClosedRiskInput): RiskResult {
     ),
   };
   return solveRisk({
+    feeSchedule: plan.feeSchedule,
     instrument,
     funds,
     entryCheck: input.quote?.price ?? plan.entryMax,

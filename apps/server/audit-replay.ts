@@ -1,6 +1,7 @@
 import { calculateClosedRisk, type ClosedRiskInput } from "./closed-risk.js";
 import { createHash } from "node:crypto";
 import Decimal from "decimal.js";
+import { chaseRatio } from "../../packages/domain/plan-controls.js";
 import { z } from "zod";
 import {
   createAttempt,
@@ -13,6 +14,8 @@ import {
 import { solveRisk } from "../../packages/domain/risk.js";
 import type {
   Funds,
+  FeeSchedule,
+  PlanInput,
   Instrument,
   RiskResult,
 } from "../../packages/contracts/index.js";
@@ -476,6 +479,12 @@ export function auditDecisionInput(input: AuditReplayInput): AuditReplayResult {
         frozen.plan.attemptId !== frozenConfig.attemptId ||
         frozen.instrument.id !== frozen.plan.instrumentId ||
         frozen.sessionOpenAt !== frozenConfig.sessionOpenAt ||
+        canonical(frozen.plan.feeSchedule) !==
+          canonical(
+            (snapshot.planVersion as { feeSchedule?: unknown })?.feeSchedule,
+          ) ||
+        (frozen.plan.chaseLimit !== undefined &&
+          chaseRatio(frozen.plan) !== frozenConfig.chaseFromLowMax) ||
         canonical(frozen.plan) !== canonical(snapshot.plan) ||
         canonical(frozen.funds) !== canonical(snapshot.funds) ||
         canonical(frozen.reservations) !== canonical(snapshot.reservations) ||
@@ -552,6 +561,11 @@ export function auditDecisionInput(input: AuditReplayInput): AuditReplayResult {
       plan.entryMin !== frozenConfig.entryMin ||
       plan.entryMax !== frozenConfig.entryMax ||
       plan.stop !== frozenConfig.stop ||
+      canonical(plan.feeSchedule) !==
+        canonical(frozen.planVersion.feeSchedule) ||
+      (plan.chaseLimit !== undefined &&
+        chaseRatio(plan as unknown as PlanInput) !==
+          frozenConfig.chaseFromLowMax) ||
       clock.sessionOpenAt !== frozenConfig.sessionOpenAt ||
       clock.receivedAt !== triggerInput.receivedAt ||
       clock.quoteAt !== technical.time ||
@@ -585,6 +599,7 @@ export function auditDecisionInput(input: AuditReplayInput): AuditReplayResult {
       ),
     };
     const baseline = solveRisk({
+      feeSchedule: plan.feeSchedule as FeeSchedule | undefined,
       instrument,
       funds: frozen.funds as Funds,
       entryCheck: plan.entryMax,
@@ -598,6 +613,7 @@ export function auditDecisionInput(input: AuditReplayInput): AuditReplayResult {
     });
     const risk = baseline.passed
       ? solveRisk({
+          feeSchedule: plan.feeSchedule as FeeSchedule | undefined,
           instrument,
           funds: frozen.scenarioFunds as Funds,
           entryCheck: entry,
