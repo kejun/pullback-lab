@@ -108,21 +108,21 @@ export function summarizeMarketProbe(
         ? ["APPLICATION_CREDENTIALS_MISSING"]
         : []),
     ],
-    steps: report.steps.slice(0, 30).map((step) => {
+    steps: report.steps.slice(0, 100).map((step) => {
       const evidence = record(step.evidence);
       const delay = record(evidence.observedDelayMs);
       const delayValues = [delay.min, delay.p50, delay.p95, delay.max];
       return {
         id: label(
           step.id,
-          /^(?:adapter|quote-level|quote-packages|confirmed-observation|calendar:(?:US|CN)|(?:instrument|quote):[A-Z0-9._-]{1,30}\.(?:US|SH|SZ)|bars:[A-Z0-9._-]{1,30}\.(?:US|SH|SZ):(?:1D|1m|5m))$/,
+          /^(?:adapter|quote-level|quote-packages|confirmed-observation|calendar:(?:US|CN)|(?:instrument|quote):[A-Z0-9._-]{1,30}\.(?:US|SH|SZ)|bars:[A-Z0-9._-]{1,30}\.(?:US|SH|SZ):(?:1D|1m|5m)|history:[A-Z0-9._-]{1,30}\.(?:US|SH|SZ):1D:\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}|history-calendar:(?:US|CN):\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2})$/,
         ),
         status: stepStatuses.has(step.status) ? step.status : "FAILED",
         ...(step.reason && reasons.has(step.reason)
           ? { reason: step.reason }
           : {}),
         elapsedMs: count(step.elapsedMs),
-        ...(step.id.startsWith("bars:")
+        ...(step.id.startsWith("bars:") || step.id.startsWith("history:")
           ? { count: count(evidence.count) }
           : {}),
         ...(step.id === "confirmed-observation"

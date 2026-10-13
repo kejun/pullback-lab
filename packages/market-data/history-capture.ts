@@ -6,6 +6,8 @@ export const HISTORY_DAY_MS = 86_400_000;
 export const HISTORY_PAGE_DAYS = 90;
 export const HISTORY_MAX_DAYS = 1096;
 export const HISTORY_PAGE_SAMPLE_LIMIT = 1000;
+export const HISTORY_MAX_JOURNAL_BYTES = 256 * 1024 * 1024;
+export const HISTORY_MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024;
 export const LONGBRIDGE_HISTORY_SOURCE = "longbridge-node-5.2.0";
 export interface HistoryWindow {
   from: string;

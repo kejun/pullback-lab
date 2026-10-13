@@ -5,6 +5,8 @@ import type { ProviderBarSample } from "../../packages/market-data/longbridge.js
 import {
   dailyHistoryWindows,
   historyCaptureSchema,
+  HISTORY_MAX_JOURNAL_BYTES,
+  HISTORY_MAX_CHECKPOINT_BYTES,
   inspectHistorySamples,
   type HistoryCalendarPage,
   type HistoryWindow,
@@ -114,8 +116,6 @@ export function prepareLongbridgeHistoryCandidates(
   };
 }
 
-const MAX_JOURNAL_BYTES = 256 * 1024 * 1024;
-const MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024;
 /** Fixed server-code path only. Read the final complete checkpoint; never fall back across a damaged tail. */
 export function readLongbridgeHistoryCapture(
   path: string,
@@ -125,9 +125,13 @@ export function readLongbridgeHistoryCapture(
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size < 2 || stat.size > MAX_JOURNAL_BYTES)
+    if (
+      !stat.isFile() ||
+      stat.size < 2 ||
+      stat.size > HISTORY_MAX_JOURNAL_BYTES
+    )
       fail("HISTORY_CAPTURE_FILE_BOUNDS");
-    const length = Math.min(stat.size, MAX_CHECKPOINT_BYTES + 1);
+    const length = Math.min(stat.size, HISTORY_MAX_CHECKPOINT_BYTES + 1);
     const tail = Buffer.alloc(length);
     let read = 0;
     while (read < length) {
@@ -148,7 +152,7 @@ export function readLongbridgeHistoryCapture(
     const start = tail.lastIndexOf(10, tail.length - 2) + 1;
     if (
       (!start && stat.size > length) ||
-      tail.length - start > MAX_CHECKPOINT_BYTES
+      tail.length - start > HISTORY_MAX_CHECKPOINT_BYTES
     )
       fail("HISTORY_CAPTURE_CHECKPOINT_BOUNDS");
     const report: unknown = JSON.parse(

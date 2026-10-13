@@ -205,4 +205,73 @@ describe("shareable probe summary", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+  it("date-window CLI requires a private journal and forces sanitized terminal output", () => {
+    const dir = mkdtempSync(join(tmpdir(), "probe-window-"));
+    const output = join(dir, "history.jsonl");
+    const env = {
+      ...process.env,
+      LONGBRIDGE_APP_KEY: "",
+      LONGBRIDGE_APP_SECRET: "",
+      LONGBRIDGE_ACCESS_TOKEN: "",
+    };
+    const invoke = (args: string[]) =>
+      spawnSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "scripts/probe.ts",
+          "--symbols",
+          "NVDA.US",
+          ...args,
+        ],
+        { env, encoding: "utf8", timeout: 10000, maxBuffer: 100000 },
+      );
+    try {
+      const missing = invoke([
+        "--history-from",
+        "2025-10-01",
+        "--history-through",
+        "2026-10-12",
+      ]);
+      expect(missing.status).toBe(1);
+      expect(JSON.parse(missing.stdout)).toEqual({
+        status: "BLOCKED",
+        failureCode: "PROBE_ARGUMENT_OR_OUTPUT_FAILED",
+      });
+      const result = invoke([
+        "--history-from",
+        "2025-10-01",
+        "--history-through",
+        "2026-10-12",
+        "--output",
+        output,
+      ]);
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        schema: "pullback-lab-market-probe-summary-v1",
+        liveEligible: false,
+        reportSaved: true,
+      });
+      expect(result.stdout).not.toContain("historyCaptures");
+      expect(statSync(output).mode & 0o777).toBe(0o600);
+      const saved = readFileSync(output, "utf8");
+      expect(JSON.parse(saved.trim()).schema).toBe(
+        "pullback-lab-market-probe-v2",
+      );
+      expect(
+        invoke([
+          "--history-from",
+          "2025-10-01",
+          "--history-through",
+          "2026-10-12",
+          "--output",
+          output,
+        ]).status,
+      ).toBe(1);
+      expect(readFileSync(output, "utf8")).toBe(saved);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -12,6 +12,10 @@ import {
 import type { Capability, Market } from "../contracts/index.js";
 import { withDeadline, OperationTimeout } from "./deadline.js";
 import { getUnknownCapabilities } from "./capabilities.js";
+import {
+  dailyHistoryWindows,
+  HISTORY_PAGE_SAMPLE_LIMIT,
+} from "./history-capture.js";
 export interface ProviderBarSample {
   symbol: string;
   period: "1D" | "1m" | "5m";
@@ -139,7 +143,29 @@ export class LongbridgeReadOnlyAdapter implements MarketDataAdapter {
     this.cache.set(key, { at: receivedAt, bars });
     return structuredClone(bars);
   }
-  /** Bounded date pagination (90-day windows). Caller must apply quota admission before requesting each page. */
+  /** One bounded RAW endpoint page. Timestamp labels, units and finality remain unverified. */
+  async fetchDailyHistoryPage(
+    symbol: string,
+    from: string,
+    through: string,
+  ): Promise<ProviderBarSample[]> {
+    validateSymbol(symbol);
+    if (dailyHistoryWindows(from, through).length !== 1)
+      throw new Error("HISTORY_PAGE_OUT_OF_BOUNDS");
+    const raw = await this.ctx.historyCandlesticksByDate(
+      symbol,
+      Period.Day,
+      AdjustType.NoAdjust,
+      asNaive(from),
+      asNaive(through),
+      TradeSessions.Intraday,
+    );
+    if (raw.length > HISTORY_PAGE_SAMPLE_LIMIT)
+      throw new Error("HISTORY_PAGE_SAMPLE_LIMIT");
+    const receivedAt = this.clock();
+    return raw.map((bar) => sample(symbol, "1D", bar, receivedAt));
+  }
+  /** Every page requires admission. Preserve duplicates/conflicts in request order for later review. */
   async fetchDailyHistory(
     symbol: string,
     from: string,
@@ -147,31 +173,15 @@ export class LongbridgeReadOnlyAdapter implements MarketDataAdapter {
     admitPage: () => Promise<void>,
   ): Promise<ProviderBarSample[]> {
     validateSymbol(symbol);
-    asNaive(from);
-    asNaive(through);
-    const first = Date.parse(`${from}T00:00:00Z`),
-      last = Date.parse(`${through}T00:00:00Z`);
-    if (last < first || last - first > 1095 * 86_400_000)
-      throw new Error("HISTORY_RANGE_OUT_OF_BOUNDS");
-    const result = new Map<number, ProviderBarSample>();
-    for (let at = first; at <= last; at += 90 * 86_400_000) {
+    const windows = dailyHistoryWindows(from, through);
+    const result: ProviderBarSample[] = [];
+    for (const page of windows) {
       await admitPage();
-      const end = Math.min(last, at + 89 * 86_400_000);
-      const raw = await this.ctx.historyCandlesticksByDate(
-        symbol,
-        Period.Day,
-        AdjustType.NoAdjust,
-        asNaive(new Date(at).toISOString().slice(0, 10)),
-        asNaive(new Date(end).toISOString().slice(0, 10)),
-        TradeSessions.Intraday,
+      result.push(
+        ...(await this.fetchDailyHistoryPage(symbol, page.from, page.through)),
       );
-      const receivedAt = this.clock();
-      for (const b of raw) {
-        const s = sample(symbol, "1D", b, receivedAt);
-        result.set(s.timestamp, s);
-      }
     }
-    return [...result.values()].sort((a, b) => a.timestamp - b.timestamp);
+    return result;
   }
   async fetchQuotes(symbols: string[]): Promise<QuoteSample[]> {
     if (symbols.length < 1 || symbols.length > 10)

@@ -5,6 +5,15 @@ import type {
 } from "./longbridge.js";
 import { getUnknownCapabilities } from "./capabilities.js";
 import { OperationTimeout, withDeadline } from "./deadline.js";
+import {
+  createHistoryCapture,
+  dailyHistoryWindows,
+  HISTORY_PAGE_SAMPLE_LIMIT,
+  inspectHistorySamples,
+  LONGBRIDGE_HISTORY_SOURCE,
+  type HistoryWindow,
+  type LongbridgeHistoryCapture,
+} from "./history-capture.js";
 
 type ProbeAdapter = Pick<
   LongbridgeReadOnlyAdapter,
@@ -15,9 +24,12 @@ type ProbeAdapter = Pick<
   | "fetchBars"
   | "calendarEvidence"
   | "observeConfirmed"
->;
+> &
+  Partial<Pick<LongbridgeReadOnlyAdapter, "source" | "fetchDailyHistoryPage">>;
 export interface ProbeOptions {
   symbols: string[];
+  /** Explicit bounded RAW daily collection; full receipts stay in the private journal. */
+  historyWindow?: HistoryWindow;
   observeSeconds: number;
   env: NodeJS.ProcessEnv;
   runtime: string;
@@ -62,6 +74,7 @@ export interface ProbeReport {
   blockedBy: string[];
   missingEnvironmentNames: string[];
   steps: ProbeStep[];
+  historyCaptures?: LongbridgeHistoryCapture[];
 }
 const credentials = [
   "LONGBRIDGE_APP_KEY",
@@ -179,7 +192,20 @@ export async function runMarketProbe(
     report.blockedBy.push("请求超时必须为1至60000毫秒的整数。");
   if (!Number.isSafeInteger(spacing) || spacing < 0 || spacing > 60_000)
     report.blockedBy.push("请求间隔超出范围。");
+  if (options.historyWindow) {
+    try {
+      dailyHistoryWindows(
+        options.historyWindow.from,
+        options.historyWindow.through,
+      );
+    } catch {
+      report.blockedBy.push("历史起止日期必须有效且窗口不超过1096个自然日。");
+    }
+    if (options.sdk !== "5.2.0")
+      report.blockedBy.push("历史采集仅支持锁定SDK5.2.0。");
+  }
   if (report.blockedBy.length > caveats.length) return finish(2);
+  if (options.historyWindow) report.historyCaptures = [];
   report.status = "COLLECTING";
   checkpoint();
   let timedOut = false;
@@ -280,27 +306,105 @@ export async function runMarketProbe(
       (x) => x.length === 0,
       scope,
     );
-    for (const period of ["1D", "1m", "5m"] as const)
+    if (options.historyWindow) {
+      const capture = createHistoryCapture(
+        symbol,
+        options.historyWindow,
+        now(),
+      );
+      report.historyCaptures!.push(capture);
+      const pages = dailyHistoryWindows(capture.from, capture.through);
+      for (const page of pages) {
+        await step(
+          `history:${symbol}:1D:${page.from}:${page.through}`,
+          async () => {
+            if (
+              adapter.source !== LONGBRIDGE_HISTORY_SOURCE ||
+              !adapter.fetchDailyHistoryPage
+            )
+              throw new Error("HISTORY_ADAPTER_UNSUPPORTED");
+            const samples = await adapter.fetchDailyHistoryPage(
+              symbol,
+              page.from,
+              page.through,
+            );
+            if (samples.length > HISTORY_PAGE_SAMPLE_LIMIT)
+              throw new Error("HISTORY_PAGE_SAMPLE_LIMIT");
+            return samples;
+          },
+          (samples) => {
+            capture.pages.push({
+              ...page,
+              receivedAt: now(),
+              samples: structuredClone(samples),
+            });
+            return {
+              count: samples.length,
+              ...inspectHistorySamples(samples),
+              finalityVerified: false,
+            };
+          },
+          () => false,
+          scope,
+        );
+        await step(
+          `history-calendar:${market}:${page.from}:${page.through}`,
+          () => adapter.calendarEvidence(market, page.from, page.through),
+          (calendar) => {
+            if (
+              calendar.tradingDays.length > HISTORY_PAGE_SAMPLE_LIMIT ||
+              calendar.halfDays.length > HISTORY_PAGE_SAMPLE_LIMIT
+            )
+              throw new Error("HISTORY_CALENDAR_SAMPLE_LIMIT");
+            capture.calendarPages.push({
+              ...page,
+              receivedAt: now(),
+              ...structuredClone(calendar),
+            });
+            return {
+              tradingDayCount: calendar.tradingDays.length,
+              halfDayCount: calendar.halfDays.length,
+              sessionHoursVerified: false,
+            };
+          },
+          () => false,
+          scope,
+        );
+      }
+      capture.status =
+        capture.pages.length === pages.length &&
+        capture.calendarPages.length === pages.length
+          ? "SAMPLED"
+          : "INCOMPLETE";
+      capture.completedAt = now();
+      checkpoint();
+    } else {
+      for (const period of ["1D", "1m", "5m"] as const)
+        await step(
+          `bars:${symbol}:${period}`,
+          () => adapter.fetchBars(symbol, period, period === "1D" ? 300 : 60),
+          barEvidence,
+          (x) => x.length === 0,
+          scope,
+        );
+    }
+  }
+  if (!options.historyWindow) {
+    const from = new Date(now()).toISOString().slice(0, 10);
+    const through = new Date(now() + 14 * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    for (const market of new Set(
+      symbols.map((x): Market => (x.endsWith(".US") ? "US" : "CN")),
+    ))
       await step(
-        `bars:${symbol}:${period}`,
-        () => adapter.fetchBars(symbol, period, period === "1D" ? 300 : 60),
-        barEvidence,
-        (x) => x.length === 0,
-        scope,
+        `calendar:${market}`,
+        () => adapter.calendarEvidence(market, from, through),
+        (x) => x,
+        (x) => x.tradingDays.length === 0,
+        { market },
       );
   }
-  const from = new Date(now()).toISOString().slice(0, 10);
-  const through = new Date(now() + 14 * 86_400_000).toISOString().slice(0, 10);
-  for (const market of new Set(
-    symbols.map((x): Market => (x.endsWith(".US") ? "US" : "CN")),
-  ))
-    await step(
-      `calendar:${market}`,
-      () => adapter.calendarEvidence(market, from, through),
-      (x) => x,
-      (x) => x.tradingDays.length === 0,
-      { market },
-    );
   if (observeSeconds > 0)
     await step(
       "confirmed-observation",
