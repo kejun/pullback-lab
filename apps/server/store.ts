@@ -648,6 +648,7 @@ export class Store {
         passed: false,
       };
     return solveRisk({
+      feeSchedule: plan.feeSchedule,
       instrument: this.instrument(plan.instrumentId).instrument,
       funds,
       entryCheck: entry,
@@ -682,6 +683,7 @@ export class Store {
       fxAsOf: clock.sessionOpenAt,
     };
     return solveRisk({
+      feeSchedule: plan.feeSchedule,
       instrument: this.instrument(plan.instrumentId).instrument,
       funds: scenarioFunds,
       entryCheck: entry,

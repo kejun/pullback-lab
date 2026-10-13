@@ -1,5 +1,6 @@
 import type {
-  Currency,
+  FeeSchedule,
+  FeeSide,
   Funds,
   Instrument,
   RiskResult,
@@ -22,20 +23,7 @@ export interface Reservations {
   riskBase: string;
   exposureBase: string;
 }
-/** Monotone schedule, in instrument quote currency; all applicable fee components must be included. */
-export interface FeeSide {
-  minimum: string;
-  fixed?: string;
-  perShare?: string;
-  notionalRate?: string;
-}
-export interface FeeSchedule {
-  buy: FeeSide;
-  sell: FeeSide;
-  currency: Currency;
-  version: string;
-  confirmed: boolean;
-}
+export type { FeeSchedule, FeeSide } from "../contracts/index.js";
 export interface RiskInput {
   instrument: Instrument;
   funds: Funds;
@@ -174,7 +162,9 @@ export function solveRisk(input: RiskInput): RiskEvaluation {
         input.maxQuoteAgeMs ?? 3000,
         "QUOTE_STALE",
       );
-    if (!funds.feesConfirmed) throw new Error("FEES_UNCONFIRMED");
+    // A versioned plan schedule owns its confirmation; the legacy checkbox applies only to legacy fixed fees.
+    if (!input.feeSchedule && !funds.feesConfirmed)
+      throw new Error("FEES_UNCONFIRMED");
     const nav = positive(funds.nav, "nav"),
       budget = positive(funds.riskBudget, "riskBudget"),
       pool = positive(funds.riskPool, "riskPool"),

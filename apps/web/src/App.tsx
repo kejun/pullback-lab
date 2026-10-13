@@ -40,6 +40,7 @@ import type { ChartPriceProposal, PlanPriceField } from "./chart-price";
 import { useEventFeed } from "./useEventFeed";
 import { SyntheticRuntime } from "./SyntheticRuntime";
 import { SupportEditor } from "./SupportEditor";
+import { PlanControlsEditor, feeFields } from "./PlanControlsEditor";
 import { MarketStatus } from "./MarketStatus";
 import { OperationsStatus } from "./OperationsStatus";
 import { ActionEvidence } from "./ActionEvidence";
@@ -2470,6 +2471,16 @@ export default function App() {
                             首 15 分钟观察 1 分钟 K 线，随后至开盘首小时观察 5
                             分钟 K 线；一次计划尝试只接受首次合格触发。
                           </p>
+                          <PlanControlsEditor
+                            plan={plan}
+                            currency={instrument.currency}
+                            onChaseChange={(chase) =>
+                              updatePlan("chaseLimit", chase)
+                            }
+                            onFeeChange={(fees) =>
+                              updatePlan("feeSchedule", fees)
+                            }
+                          />
                           <Field label="计划依据">
                             <textarea
                               value={plan.reason}
@@ -2571,6 +2582,20 @@ export default function App() {
                               </strong>
                               <span>考虑滑点的止损价</span>
                               <strong>{num(risk.stopExec)}</strong>
+                              <span>核算买入费用</span>
+                              <strong>
+                                {risk.feeVersion ? num(risk.buyFee) : "—"}{" "}
+                                {instrument.currency}
+                              </strong>
+                              <span>核算卖出费用</span>
+                              <strong>
+                                {risk.feeVersion ? num(risk.sellFee) : "—"}{" "}
+                                {instrument.currency}
+                              </strong>
+                              <span>费用规则版本</span>
+                              <strong className="breakable">
+                                {risk.feeVersion ?? "未记录"}
+                              </strong>
                             </div>
                             {risk.reasons.length > 0 && (
                               <ul className="reason-list danger-text">
@@ -3494,9 +3519,9 @@ export default function App() {
                   </Field>
                 </section>
                 <section className="settings-section">
-                  <h3>费用与滑点估计</h3>
+                  <h3>旧版固定费用与滑点估计</h3>
                   <p className="settings-intro">
-                    填写完整适用的每笔买卖费用估计和每股滑点，单位为证券报价币种。未核实费用时只做研究，不允许风险通过。
+                    旧版每笔固定费用仅用于尚未配置完整费用规则的计划。完整费用规则请在回踩计划中填写并保存新版本；此处每股滑点仍适用于两种方式。单位为证券报价币种。
                   </p>
                   <div className="field-pair">
                     <Field label="买入费用 / 笔">
@@ -3511,6 +3536,7 @@ export default function App() {
                           setFundsForm((f) => ({
                             ...f!,
                             buyFee: e.target.value,
+                            feesConfirmed: false,
                           }))
                         }
                         placeholder="无费用须明确填 0"
@@ -3528,6 +3554,7 @@ export default function App() {
                           setFundsForm((f) => ({
                             ...f!,
                             sellFee: e.target.value,
+                            feesConfirmed: false,
                           }))
                         }
                         placeholder="无费用须明确填 0"
@@ -3579,7 +3606,9 @@ export default function App() {
                         }))
                       }
                     />
-                    <span>我已核对费用，包括适用的佣金、最低费用与税费。</span>
+                    <span>
+                      我已核对旧版固定费用，包括适用的佣金、最低费用与税费。
+                    </span>
                   </label>
                 </section>
                 <div className="funds-confirm">
@@ -3664,6 +3693,41 @@ function ConflictPanel({
       draft: value(planDraft, key),
       latest: value(review.latestPlan!, key),
     }));
+    const controls = (input: PlanInput): [string, string][] => [
+      ["追价限制", input.chaseLimit?.enabled ? "启用" : "关闭"],
+      [
+        "追价上限（%）",
+        input.chaseLimit?.enabled
+          ? (input.chaseLimit.maxPercent ?? "未填写")
+          : "不适用",
+      ],
+      ["费用方式", input.feeSchedule ? "完整费用规则" : "旧版固定费用"],
+      ["费用规则版本", input.feeSchedule?.version ?? "未记录"],
+      ["费用规则日期", input.feeSchedule?.ruleDate ?? "未记录"],
+      ["费用币种", input.feeSchedule?.currency ?? "资金快照对应报价币种"],
+      [
+        "计划费用确认",
+        input.feeSchedule
+          ? input.feeSchedule.confirmed
+            ? "已确认"
+            : "未确认"
+          : "按旧版资金费用确认",
+      ],
+      ...(["buy", "sell"] as const).flatMap((side) =>
+        feeFields.map(([field, label]): [string, string] => [
+          `${side === "buy" ? "买入" : "卖出"}${label}`,
+          input.feeSchedule?.[side][field] ?? "未记录",
+        ]),
+      ),
+    ];
+    const latestControls = controls(review.latestPlan);
+    rows.push(
+      ...controls(planDraft).map(([label, draft], index) => ({
+        label,
+        draft,
+        latest: latestControls[index][1],
+      })),
+    );
   } else if (target.kind === "funds" && fundsDraft && review.latestFunds) {
     const latest = review.latestFunds;
     const fields: [keyof Funds, string][] = [

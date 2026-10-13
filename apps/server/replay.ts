@@ -1,4 +1,5 @@
 import Decimal from "decimal.js";
+import { chaseRatio } from "../../packages/domain/plan-controls.js";
 import type { Bar, DecisionEvent } from "../../packages/contracts/index.js";
 import {
   createAttempt,
@@ -72,12 +73,17 @@ export function replayPlan(
     sessionId: `synthetic:${plan.instrumentId}:${plan.sessionDate}`,
     sessionOpenAt: open,
     activatedAt: open - 1,
-    mode: plan.mode,
-    lower: plan.lower,
-    upper: plan.upper,
-    stop: plan.stop,
-    entryMin: plan.entryMin,
-    entryMax: plan.entryMax,
+    mode: frozen.mode,
+    lower: frozen.lower,
+    upper: frozen.upper,
+    stop: frozen.stop,
+    entryMin: frozen.entryMin,
+    entryMax: frozen.entryMax,
+    ...(frozen.chaseLimit?.enabled
+      ? {
+          chaseFromLowMax: chaseRatio(frozen),
+        }
+      : {}),
     tick: instrument.tick,
     previousDayClose: frozen.previousDailyBar!.close,
     evidenceEpoch: `synthetic:${plan.attemptId}`,

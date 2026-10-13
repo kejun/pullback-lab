@@ -159,7 +159,12 @@ export const testFunds: Funds = {
   feesConfirmed: true,
 };
 export async function setupClosed(
-  options: { path?: string; autoDrain?: boolean; activate?: boolean } = {},
+  options: {
+    path?: string;
+    autoDrain?: boolean;
+    activate?: boolean;
+    planInput?: Partial<PlanInput>;
+  } = {},
 ) {
   let now = OPEN - 1;
   const store = new Store(options.path);
@@ -178,7 +183,7 @@ export async function setupClosed(
   await runner.start();
   store.confirmScreening(undefined, 0, now);
   store.updateFunds({ ...testFunds, fxAsOf: now }, 0, now);
-  const created = store.createPlan(planInput, now);
+  const created = store.createPlan({ ...planInput, ...options.planInput }, now);
   const plan =
     options.activate === false
       ? created

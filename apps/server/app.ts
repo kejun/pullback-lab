@@ -16,6 +16,7 @@ import {
 } from "node:crypto";
 import { z, ZodError } from "zod";
 import Decimal from "decimal.js";
+import { decimal } from "../../packages/domain/numeric.js";
 import type { Funds, Plan, PlanInput } from "../../packages/contracts/index.js";
 import {
   avwap,
@@ -109,7 +110,54 @@ const supportPreviewSchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .optional(),
 });
+const feeSideSchema = z
+  .object({
+    minimum: numeric,
+    fixed: numeric,
+    perShare: numeric,
+    notionalRate: numeric,
+  })
+  .strict();
+const feeScheduleSchema = z
+  .object({
+    buy: feeSideSchema,
+    sell: feeSideSchema,
+    currency: z.enum(["USD", "CNY"]),
+    version: z.string().trim().min(1).max(120),
+    ruleDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .refine((value) => {
+        const date = new Date(`${value}T00:00:00Z`);
+        return (
+          Number.isFinite(date.valueOf()) &&
+          date.toISOString().slice(0, 10) === value
+        );
+      }, "费用规则日期无效"),
+    confirmed: z.boolean(),
+  })
+  .strict();
+const chaseLimitSchema = z
+  .object({
+    enabled: z.boolean(),
+    maxPercent: numeric
+      .refine((value) => {
+        try {
+          return decimal(value).gte(0);
+        } catch {
+          return false;
+        }
+      }, "百分比最多支持64位有效数字")
+      .optional(),
+  })
+  .strict()
+  .refine(
+    (value) => !value.enabled || value.maxPercent !== undefined,
+    "开启追高限制时须填写百分比",
+  );
 const planSchema = z.object({
+  chaseLimit: chaseLimitSchema.optional(),
+  feeSchedule: feeScheduleSchema.optional(),
   researchHistoryId: z
     .string()
     .regex(/^history-v1:[a-f0-9]{64}$/)
@@ -586,6 +634,20 @@ export async function createApp(
   function validatePlan(body: unknown): PlanInput {
     const p = planSchema.parse(body);
     const instrument = store.instrument(p.instrumentId).instrument;
+    // Provenance date, not a future effective-date schedule. Trust only the server clock.
+    const marketToday = new Intl.DateTimeFormat("en-CA", {
+      timeZone:
+        instrument.market === "US" ? "America/New_York" : "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(now());
+    if (p.feeSchedule && p.feeSchedule.ruleDate > marketToday)
+      throw new ApiError(
+        400,
+        "FEE_RULE_DATE_IN_FUTURE",
+        "费用规则日期不能晚于当前市场日期",
+      );
     assertCurrentResearchHistory(store.db, p.instrumentId, p.researchHistoryId);
     if (
       !new Decimal(p.stop).lt(p.lower) ||

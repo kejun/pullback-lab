@@ -2,6 +2,7 @@ import { withDeadline } from "../../packages/market-data/deadline.js";
 import type { ClosedRiskInput } from "./closed-risk.js";
 import { randomUUID } from "node:crypto";
 import Decimal from "decimal.js";
+import { chaseRatio } from "../../packages/domain/plan-controls.js";
 import type { Plan, RiskResult } from "../../packages/contracts/index.js";
 import {
   createAttempt,
@@ -1251,6 +1252,7 @@ export class ClosedBarRuntime {
           : undefined,
       );
       const plan = activated.plan;
+      const version = this.store.planVersion(plan);
       const config: AttemptConfig = {
         allowPausedCancellation: true,
         allowFeedbackCorrections: true,
@@ -1262,13 +1264,18 @@ export class ClosedBarRuntime {
         sessionCloseAt: c.session.close,
         activatedAt: Math.max(now, source?.watermark ?? now),
         mode: "CLOSE_CONFIRM",
-        lower: p.lower,
-        upper: p.upper,
-        stop: p.stop,
-        entryMin: p.entryMin,
-        entryMax: p.entryMax,
+        lower: version.lower,
+        upper: version.upper,
+        stop: version.stop,
+        entryMin: version.entryMin,
+        entryMax: version.entryMax,
+        ...(version.chaseLimit?.enabled
+          ? {
+              chaseFromLowMax: chaseRatio(version),
+            }
+          : {}),
         tick: c.instrument.tick,
-        previousDayClose: p.supportSnapshot!.reference.close!,
+        previousDayClose: version.supportSnapshot!.reference.close!,
         evidenceEpoch: randomUUID(),
         template: source ? "RECOVERY" : "SESSION_FIRST",
         preActivationEvidence: source ? "UNKNOWN" : "NO_TOUCH",

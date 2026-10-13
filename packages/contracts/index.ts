@@ -172,7 +172,32 @@ export interface SupportPreviewInput {
   supportSelections: SupportSelection[];
   sessionDate?: string;
 }
+/** All amounts use the explicitly selected instrument quote currency. */
+export interface FeeSide {
+  minimum: string;
+  fixed?: string;
+  perShare?: string;
+  notionalRate?: string;
+}
+export interface FeeSchedule {
+  buy: FeeSide;
+  sell: FeeSide;
+  currency: Currency;
+  version: string;
+  confirmed: boolean;
+  /** User-supplied rule date; older pure-kernel fixtures may omit it. */
+  ruleDate?: string;
+}
+export interface ChaseLimit {
+  enabled: boolean;
+  /** Percentage, not a fractional ratio: user-entered "3" means 3%. */
+  maxPercent?: string;
+}
 export interface PlanInput {
+  /** Omitted on legacy versions only; never filled with a personal default. */
+  chaseLimit?: ChaseLimit;
+  /** A plan-version-owned fee schedule; omission retains legacy fixed fees. */
+  feeSchedule?: FeeSchedule;
   /** Explicit immutable manual research dataset; never grants live capability. */
   researchHistoryId?: string;
   instrumentId: string;
@@ -243,6 +268,9 @@ export interface Funds {
   feesConfirmed: boolean;
 }
 export interface RiskResult {
+  buyFee?: string;
+  sellFee?: string;
+  feeVersion?: string | null;
   quantity: number;
   entry: string;
   stopExec: string;

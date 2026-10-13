@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import Decimal from "decimal.js";
+import { chaseRatio } from "../../packages/domain/plan-controls.js";
 import type { Bar } from "../../packages/contracts/index.js";
 import {
   createAttempt,
@@ -318,12 +319,17 @@ export class AttemptRuntime {
         sessionId: `synthetic:${plan.instrumentId}:${plan.sessionDate}`,
         sessionOpenAt: open,
         activatedAt: open - 1,
-        mode: plan.mode,
-        lower: plan.lower,
-        upper: plan.upper,
-        stop: plan.stop,
-        entryMin: plan.entryMin,
-        entryMax: plan.entryMax,
+        mode: version.mode,
+        lower: version.lower,
+        upper: version.upper,
+        stop: version.stop,
+        entryMin: version.entryMin,
+        entryMax: version.entryMax,
+        ...(version.chaseLimit?.enabled
+          ? {
+              chaseFromLowMax: chaseRatio(version),
+            }
+          : {}),
         tick: version.instrument.tick,
         previousDayClose: version.previousDailyBar.close,
         evidenceEpoch: `synthetic:${plan.attemptId}`,
@@ -541,16 +547,23 @@ export class AttemptRuntime {
         },
       );
       const version = this.store.planVersion(plan);
+      // Recovery uses the newly activated immutable plan version, including an explicit disable.
+      const { chaseFromLowMax: priorChaseLimit, ...baseConfig } = oldConfig;
       const config: AttemptConfig = {
-        ...oldConfig,
+        ...baseConfig,
         attemptId: plan.attemptId!,
         planVersion: plan.version,
         activatedAt: watermark,
-        lower: plan.lower,
-        upper: plan.upper,
-        stop: plan.stop,
-        entryMin: plan.entryMin,
-        entryMax: plan.entryMax,
+        lower: version.lower,
+        upper: version.upper,
+        stop: version.stop,
+        entryMin: version.entryMin,
+        entryMax: version.entryMax,
+        ...(version.chaseLimit?.enabled
+          ? {
+              chaseFromLowMax: chaseRatio(version),
+            }
+          : {}),
         tick: version.instrument.tick,
         previousDayClose:
           version.previousDailyBar?.close ?? oldConfig.previousDayClose,
