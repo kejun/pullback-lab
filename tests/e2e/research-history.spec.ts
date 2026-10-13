@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { Bootstrap, PlanInput } from "../../packages/contracts/index";
 import type {
   ResearchChartData,
@@ -24,6 +24,47 @@ const file = (manifest: unknown, name = "manual-history.json") => ({
   mimeType: "application/json",
   buffer: Buffer.from(JSON.stringify(manifest)),
 });
+// Normal document scrolling only: keep the fixed navigation visible and verify
+// the target's full bounds and hit area before capturing the real viewport.
+async function revealUncovered(target: Locator) {
+  await target.evaluate((element) =>
+    element.scrollIntoView({
+      block: "center",
+      inline: "nearest",
+      behavior: "instant",
+    }),
+  );
+  await expect(target).toBeInViewport({ ratio: 1 });
+  await expect
+    .poll(() =>
+      target.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        const nav = document.querySelector(".sidebar")?.getBoundingClientRect();
+        const bottom =
+          nav && nav.width >= innerWidth * 0.9 && nav.bottom >= innerHeight - 1
+            ? nav.top
+            : innerHeight;
+        if (
+          rect.top < 0 ||
+          rect.bottom > bottom ||
+          rect.left < 0 ||
+          rect.right > innerWidth
+        )
+          return false;
+        return [0.25, 0.5, 0.75].every((x) =>
+          [0.25, 0.5, 0.75].every((y) => {
+            const hit = document.elementFromPoint(
+              rect.left + rect.width * x,
+              rect.top + rect.height * y,
+            );
+            return hit !== null && element.contains(hit);
+          }),
+        );
+      }),
+    )
+    .toBe(true);
+}
+
 async function login(page: Page) {
   const response = await page.request.post("/api/login", {
     headers,
@@ -148,7 +189,19 @@ test("manual history stays preview-only until confirmed, drives all charts, and 
   ).toBeDisabled();
   expect(await snapshot(page)).toEqual(before);
   expect(uploads).toHaveLength(1);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await revealUncovered(previewPanel(page).getByRole("checkbox"));
   await previewPanel(page).getByRole("checkbox").check();
+  const confirmImport = previewPanel(page).getByRole("button", {
+    name: "确认导入历史资料",
+  });
+  await revealUncovered(confirmImport);
+  await confirmImport.click({ trial: true });
+  await page.screenshot({
+    path: test
+      .info()
+      .outputPath("research-history-mobile-confirm-import-viewport.png"),
+  });
   const importedResponse = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
@@ -159,6 +212,7 @@ test("manual history stays preview-only until confirmed, drives all charts, and 
     .click();
   const imported = await (await importedResponse).json();
   expect(imported.status).toBe("IMPORTED");
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await expect(panel(page)).toContainText("资料已原子导入");
   await expect(page.getByLabel("主支撑价", { exact: true })).toHaveValue(
     "50.01",
@@ -329,6 +383,15 @@ test("manual history stays preview-only until confirmed, drives all charts, and 
   await chartEvidence(page).screenshot({
     path: test.info().outputPath("research-history-desktop-chart-evidence.png"),
   });
+  const candleChart = page.locator(".chart-container").getByRole("img");
+  await expect(page.locator(".chart-loading")).toHaveCount(0);
+  await expect(candleChart.locator("canvas").first()).toBeVisible();
+  await revealUncovered(candleChart);
+  await page
+    .locator(".chart-panel")
+    .screenshot({
+      path: test.info().outputPath("research-history-desktop-candles.png"),
+    });
   await page.setViewportSize({ width: 390, height: 844 });
   await panel(page).scrollIntoViewIfNeeded();
   expect(
@@ -347,6 +410,20 @@ test("manual history stays preview-only until confirmed, drives all charts, and 
   await chartEvidence(page).screenshot({
     path: test.info().outputPath("research-history-mobile-chart-evidence.png"),
   });
+  await revealUncovered(
+    panel(page).getByRole("button", { name: "只读预览", exact: true }),
+  );
+  await page.screenshot({
+    path: test
+      .info()
+      .outputPath("research-history-mobile-import-footer-viewport.png"),
+  });
+  await revealUncovered(candleChart);
+  await page.screenshot({
+    path: test
+      .info()
+      .outputPath("research-history-mobile-candles-viewport.png"),
+  });
   const mobileReason =
     "390px 窄屏人工复核：沿用当前历史资料与精确锚点，仅保存研究草稿。";
   await page.getByLabel("计划依据").fill(mobileReason);
@@ -360,6 +437,17 @@ test("manual history stays preview-only until confirmed, drives all charts, and 
       .locator(".plan-editor")
       .evaluate((element) => element.scrollWidth <= element.clientWidth),
   ).toBe(true);
+  const mobileSaveButton = page.getByRole("button", {
+    name: "保存新版本",
+    exact: true,
+  });
+  await revealUncovered(mobileSaveButton);
+  await mobileSaveButton.click({ trial: true });
+  await page.screenshot({
+    path: test
+      .info()
+      .outputPath("research-history-mobile-plan-save-viewport.png"),
+  });
   const mobileSave = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
@@ -402,6 +490,12 @@ test("manual history stays preview-only until confirmed, drives all charts, and 
   ).toBe(true);
   await page.locator(".plan-editor").screenshot({
     path: test.info().outputPath("research-history-mobile-plan-editor.png"),
+  });
+  await revealUncovered(mobileSaveButton);
+  await page.screenshot({
+    path: test
+      .info()
+      .outputPath("research-history-mobile-plan-saved-viewport.png"),
   });
   expect(errors).toEqual([]);
 });
