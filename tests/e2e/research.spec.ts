@@ -8,21 +8,34 @@ import type {
   DecisionEvent,
 } from "../../packages/contracts/index";
 
-test("private API rejects anonymous access and cross-site writes", async ({
+test("tunnel origins allow login while sessions and write markers remain required", async ({
   request,
 }) => {
   expect((await request.get("/api/bootstrap")).status()).toBe(401);
+  const noMarker = await request.post("/api/login", {
+    data: { password: "e2e-only-password" },
+    headers: { Origin: "https://research.trycloudflare.com" },
+  });
+  expect(noMarker.status()).toBe(403);
+  expect((await noMarker.json()).code).toBe("CSRF_REJECTED");
   expect(
     (
       await request.post("/api/login", {
         data: { password: "e2e-only-password" },
         headers: {
-          Origin: "https://elsewhere.invalid",
+          Origin: "https://research.trycloudflare.com",
           "X-Requested-With": "PullbackLab",
         },
       })
     ).status(),
-  ).toBe(403);
+  ).toBe(200);
+  expect(
+    (
+      await request.get("/api/bootstrap", {
+        headers: { Origin: "https://research.trycloudflare.com" },
+      })
+    ).status(),
+  ).toBe(200);
 });
 
 test("research workflow preserves plans, records and stale-funds protection", async ({

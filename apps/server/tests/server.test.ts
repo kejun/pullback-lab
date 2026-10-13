@@ -128,7 +128,7 @@ async function replay(fixture: Awaited<ReturnType<typeof setup>>, plan: Plan) {
 }
 
 describe("private API and durable workflow", () => {
-  it("blocks unconfigured private endpoints, unauthenticated reads/SSE, cross-origin and missing CSRF marker", async () => {
+  it("allows tunnel origins while blocking unconfigured access, anonymous reads/SSE and missing CSRF markers", async () => {
     const noPassword = await createApp({ demo: true });
     apps.push(noPassword);
     expect((await noPassword.inject("/api/bootstrap")).statusCode).toBe(503);
@@ -153,18 +153,18 @@ describe("private API and durable workflow", () => {
         await app.inject({
           method: "POST",
           url: "/api/demo/seed",
-          headers: { ...headers, origin: "https://untrusted.example" },
+          headers: { ...headers, origin: "https://research.trycloudflare.com" },
         })
       ).statusCode,
-    ).toBe(403);
+    ).toBe(200);
     expect(
       (
         await app.inject({
           url: "/api/events/stream",
-          headers: { ...headers, origin: "https://untrusted.example" },
+          headers: { origin: "https://research.trycloudflare.com" },
         })
       ).statusCode,
-    ).toBe(403);
+    ).toBe(401);
     const stored = app.store.setting("password_version")!;
     expect(stored).not.toBe(
       createHash("sha256").update(password).digest("hex"),

@@ -58,7 +58,7 @@ PlanInput.supportSelections 可选 EMA9/EMA21/EMA50/AVWAP，或带 id、label、
 
 ## 人工历史资料（v10 存储）
 
-所有接口继承私有鉴权、no-store、写入 CSRF 与 Origin 约束。人工资料不会进入供应商已验证队列，不改变 liveEligible。
+所有接口继承私有鉴权、no-store 与写入 CSRF 标记约束。请求 Origin 无须匹配本地上游地址或部署公开地址，支持 Cloudflare Tunnel 转发；不会返回跨站 CORS 授权头。人工资料不会进入供应商已验证队列，不改变 liveEligible。
 
 - GET `/api/instruments/:id/research-history`：当前和最近 20 份不可变资料摘要。
 - GET `/api/instruments/:id/research-history/template`：当前标的 JSON 模板，可带当前公司行动原文；来源占位不可导入。
