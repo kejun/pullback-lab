@@ -113,3 +113,26 @@ export function monitorCommandBody(
       : {}),
   };
 }
+
+/** One read per mount generation. Cancellation releases the lease for StrictMode remounts. */
+export class MonitorReadFence {
+  private generation = 0;
+  private reading = false;
+  begin(): number | null {
+    if (this.reading) return null;
+    this.reading = true;
+    return ++this.generation;
+  }
+  current(token: number) {
+    return token === this.generation;
+  }
+  finish(token: number) {
+    if (!this.current(token)) return false;
+    this.reading = false;
+    return true;
+  }
+  cancel() {
+    this.generation++;
+    this.reading = false;
+  }
+}

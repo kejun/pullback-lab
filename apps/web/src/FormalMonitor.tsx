@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Plan } from "../../../packages/contracts/index";
 import { api, ApiError } from "./api";
 import {
+  MonitorReadFence,
   formalMonitorControls,
   monitorCommandBody,
   type MonitorCommand,
@@ -62,44 +63,44 @@ export function FormalMonitor({
   const [confirmation, setConfirmation] = useState<MonitorCommand | null>(null);
   const [lastRead, setLastRead] = useState<number | null>(null);
   const active = useRef(false);
-  const sequence = useRef(0);
+  const reads = useRef(new MonitorReadFence());
   const commandLock = useRef(false);
-  const readLock = useRef(false);
   const readAbort = useRef<AbortController | null>(null);
   const callback = useRef(onChanged);
   callback.current = onChanged;
 
   async function read(explicit = false, refreshPlan = explicit) {
-    if (readLock.current || commandLock.current) return;
-    readLock.current = true;
-    const requested = ++sequence.current;
+    if (commandLock.current) return;
+    const requested = reads.current.begin();
+    if (requested === null) return;
     const controller = new AbortController();
     readAbort.current = controller;
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
     setLoading(true);
     try {
       if (refreshPlan) await callback.current();
-      if (!active.current || requested !== sequence.current) return;
+      if (!active.current || !reads.current.current(requested)) return;
       const result = await api<MonitorSnapshot>(
         `/plans/${encodeURIComponent(plan.id)}/monitor`,
         "GET",
         undefined,
         { signal: controller.signal },
       );
-      if (!active.current || requested !== sequence.current) return;
+      if (!active.current || !reads.current.current(requested)) return;
       setSnapshot(result);
       setLastRead(Date.now());
       setError(null);
       if (explicit) setNeedsRefresh(false);
     } catch (cause) {
-      if (!active.current || requested !== sequence.current) return;
+      if (!active.current || !reads.current.current(requested)) return;
       setError(
         cause instanceof Error ? cause.message : "无法读取正式监测状态。",
       );
       setNeedsRefresh(true);
       setConfirmation(null);
     } finally {
-      if (requested === sequence.current) {
-        readLock.current = false;
+      window.clearTimeout(timeout);
+      if (reads.current.finish(requested)) {
         if (active.current) setLoading(false);
       }
     }
@@ -109,7 +110,7 @@ export function FormalMonitor({
     void read();
     return () => {
       active.current = false;
-      sequence.current++;
+      reads.current.cancel();
       readAbort.current?.abort();
     };
   }, []);
@@ -146,12 +147,13 @@ export function FormalMonitor({
     setPending(true);
     onBusyChange(true);
     setError(null);
-    ++sequence.current;
+    reads.current.cancel();
     try {
       await api(
         `/plans/${encodeURIComponent(plan.id)}/${kind === "recover" ? "monitor/recover" : kind}`,
         "POST",
         monitorCommandBody(plan, snapshot, kind),
+        { signal: AbortSignal.timeout(20000) },
       );
       if (!active.current) return;
       setConfirmation(null);
@@ -216,7 +218,12 @@ export function FormalMonitor({
           {error}
         </p>
       )}
-      {controls.reason && <p className="support-warning">{controls.reason}</p>}
+      {controls.capabilityReason && (
+        <p className="support-warning">{controls.capabilityReason}</p>
+      )}
+      {controls.evidenceReason && (
+        <p className="support-warning">{controls.evidenceReason}</p>
+      )}
       {controls.identityMismatch && (
         <p className="support-warning" role="alert">
           服务端尝试与当前计划版本不一致。请读取最新监测状态，核对后再操作。

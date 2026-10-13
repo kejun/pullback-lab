@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Plan } from "../packages/contracts/index";
 import {
+  MonitorReadFence,
   formalMonitorControls,
   monitorCommandBody,
   type MonitorSnapshot,
@@ -134,5 +135,21 @@ describe("formal monitor controls", () => {
       expectedVersion: 2,
       expectedAttemptId: null,
     });
+  });
+});
+
+describe("monitor read lifecycle", () => {
+  it("releases the read lock on StrictMode setup-cleanup-setup and isolates late results", () => {
+    const reads = new MonitorReadFence();
+    const first = reads.begin()!;
+    expect(reads.begin()).toBeNull();
+    reads.cancel();
+    const remounted = reads.begin()!;
+    expect(remounted).not.toBeNull();
+    expect(reads.current(first)).toBe(false);
+    expect(reads.finish(first)).toBe(false);
+    expect(reads.begin()).toBeNull();
+    expect(reads.finish(remounted)).toBe(true);
+    expect(reads.begin()).not.toBeNull();
   });
 });
