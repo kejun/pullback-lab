@@ -1,5 +1,6 @@
 import { calculateClosedRisk, type ClosedRiskInput } from "./closed-risk.js";
 import { trustedClosedSupport } from "./closed-bar-adapter.js";
+import { trustedEodResearch } from "./eod-research.js";
 import {
   researchHistoryBars,
   readResearchHistory,
@@ -334,13 +335,25 @@ export class Store {
     const trusted =
       !research &&
       trustedClosedSupport(this.db, instrument, bars, now, sessionDate);
+    // Daily research proof may inform a draft's calculations without becoming live support.
+    // Validate the complete installed series before applying the plan's daily cutoff.
+    const eod =
+      !research &&
+      !trusted &&
+      trustedEodResearch(
+        this.db,
+        instrument,
+        this.bars(input.instrumentId, "1D"),
+        now,
+      );
     const result = freezeSupport(
       { ...input, supportSelections: input.supportSelections ?? [] },
       instrument,
       {
         bars,
-        historyComplete: synthetic || Boolean(trusted),
-        adjustmentVerified: synthetic || research !== null || Boolean(trusted),
+        historyComplete: synthetic || Boolean(trusted) || Boolean(eod),
+        adjustmentVerified:
+          synthetic || research !== null || Boolean(trusted) || Boolean(eod),
         synthetic,
         dataRevision: this.revision(bars),
         instrumentRevision: this.revision(instrument),
@@ -349,6 +362,12 @@ export class Store {
       reason,
     );
     if (trusted) result.providerContextId = trusted.id;
+    if (eod) {
+      result.researchContextId = eod.id;
+      result.ready = false;
+      result.status = "INCOMPLETE";
+      result.reasons = [...new Set([...result.reasons, "EOD_RESEARCH_ONLY"])];
+    }
     if (research) {
       result.ready = false;
       result.status = "INCOMPLETE";
@@ -392,6 +411,16 @@ export class Store {
     );
     if (this.revision(daily) !== frozen.dataRevision)
       reasons.push("PLAN_DATA_REVISION_CHANGED");
+    if (
+      frozen.researchContextId &&
+      trustedEodResearch(
+        this.db,
+        instrument,
+        this.bars(plan.instrumentId, "1D"),
+        now,
+      )?.id !== frozen.researchContextId
+    )
+      reasons.push("RESEARCH_CONTEXT_REVISION_CHANGED");
     if (
       frozen.providerContextId &&
       trustedClosedSupport(this.db, instrument, daily, now, plan.sessionDate)

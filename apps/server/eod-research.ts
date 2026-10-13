@@ -198,7 +198,7 @@ export function trustedEodResearch(
     return null;
   return c;
 }
-/** Research only. Live support and activation deliberately keep trustedClosedSupport. */
+/** Research only. Formal readiness and activation deliberately keep trustedClosedSupport. */
 export function trustedDailyResearch(
   db: Database.Database,
   instrument: Instrument,
