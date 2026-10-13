@@ -269,6 +269,17 @@ test("manual history stays preview-only until confirmed, drives all charts, and 
   await expect(page.locator(".research-evidence .evidence-grid")).toHaveCount(
     0,
   );
+  // Adoption starts a new support request; compare stable draft content only
+  // after that exact current draft has a completed historical-research result.
+  const adoptedSupport = page.getByRole("region", {
+    name: "支撑家族与证据",
+    exact: true,
+  });
+  await expect(adoptedSupport.locator(".support-preview")).toHaveAttribute(
+    "aria-busy",
+    "false",
+  );
+  await expect(adoptedSupport).toContainText("人工历史重建资料仅供研究");
   const draftBeforeRead = await page.locator(".plan-editor").innerText();
   const persistedBeforeRead = await snapshot(page);
   await panel(page)
