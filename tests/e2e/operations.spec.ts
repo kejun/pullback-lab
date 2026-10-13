@@ -91,16 +91,18 @@ test("encoded API paths retain the private browser security boundary", async ({
   expect(csrf.status()).toBe(403);
   expect((await csrf.json()).code).toBe("CSRF_REJECTED");
   const foreign = await page.request.post("/ap%69/universe", {
-    headers: { ...headers, Origin: "https://untrusted.example" },
+    headers: { Origin: "https://research.trycloudflare.com" },
     data: { symbol: "DENIED.US", market: "US" },
   });
   expect(foreign.status()).toBe(403);
-  expect((await foreign.json()).code).toBe("ORIGIN_REJECTED");
+  expect((await foreign.json()).code).toBe("CSRF_REJECTED");
   expect(await researchState(page)).toEqual(before);
   expect(
     before.instruments.some((instrument) => instrument.symbol === "DENIED.US"),
   ).toBe(false);
-  const encoded = await page.request.get("/%61pi/bootstrap");
+  const encoded = await page.request.get("/%61pi/bootstrap", {
+    headers: { Origin: "https://research.trycloudflare.com" },
+  });
   expect(encoded.status()).toBe(200);
   expect((await encoded.json()).instruments).toEqual(before.instruments);
 });

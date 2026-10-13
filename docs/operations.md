@@ -10,7 +10,7 @@
 | `PULLBACK_DB`                                                              | 数据库路径，默认 `data/pullback.sqlite`                       |
 | `PULLBACK_BACKUP_DIR`                                                      | 迁移前备份目录，默认主数据库同目录的 `backups` 子目录         |
 | `HOST` / `PORT`                                                            | 默认 `127.0.0.1:3000`                                         |
-| `PULLBACK_ORIGIN`                                                          | HTTPS 反向代理的完整来源，例如 `https://research.example.com` |
+| `PULLBACK_ORIGIN`                                                          | 部署公开 HTTPS 地址，例如 `https://research.example.com`；用于代理配置与诊断，不限制请求 Origin |
 | `NODE_ENV=production`                                                      | 开启 Secure 会话 Cookie，必须通过 HTTPS 访问                  |
 | `PULLBACK_DEMO=1`                                                          | 显式开放合成样本与历史回放，默认关闭                          |
 | `PULLBACK_RESTORED=1`                                                      | 兼容人工复制恢复：首次启动失效旧状态后移除；新 restore 命令不需要 |

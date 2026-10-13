@@ -271,10 +271,8 @@ export async function createApp(
     if (!routeUrl?.startsWith("/api/") && !request.url.startsWith("/api/"))
       return;
     reply.header("Cache-Control", "no-store");
-    const origin = request.headers.origin;
-    const requestOrigin = `${request.protocol}://${request.headers.host}`;
-    if (origin && origin !== (options.origin ?? requestOrigin))
-      throw new ApiError(403, "ORIGIN_REJECTED", "拒绝来自其他站点的请求");
+    // A tunnel's public Origin can differ from the local upstream address.
+    // Keep the write marker and session checks independent of that address.
     const isWrite = !["GET", "HEAD", "OPTIONS"].includes(request.method);
     if (isWrite && request.headers["x-requested-with"] !== "PullbackLab")
       throw new ApiError(403, "CSRF_REJECTED", "写请求缺少应用来源标记");

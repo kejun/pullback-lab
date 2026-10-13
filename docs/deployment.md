@@ -33,7 +33,9 @@ dc build app
 docker image inspect pullback-lab:local --format '{{.Id}}'
 ```
 
-将示例域名替换为真实域名。`PULLBACK_ORIGIN` 必须是完整 HTTPS 来源，不包含路径、查询参数或末尾 `/`。Compose 将相同值传给应用和 Caddy，避免写请求来源与代理地址不一致。每次新开管理终端都要恢复这一公开变量及 `dc` 定义。
+将示例域名替换为真实域名。`PULLBACK_ORIGIN` 必须是完整 HTTPS 来源，不包含路径、查询参数或末尾 `/`。Compose 将该值用于 Caddy 的公开域名配置和应用部署诊断，不作为请求来源白名单。每次新开管理终端都要恢复这一公开变量及 `dc` 定义。
+
+通过 Cloudflare Tunnel 访问时，应用允许浏览器的公开 HTTPS Origin 与本地上游地址或 `PULLBACK_ORIGIN` 不同。登录、API 和 SSE 不再因该差异返回 `ORIGIN_REJECTED`。私有接口仍要求有效会话，写请求仍要求 `X-Requested-With: PullbackLab`；未启用跨站 CORS 授权。生产模式的 HTTPS 配置校验保持生效。
 
 `--env-file /dev/null` 阻止 Compose 自动读取工作目录中的其他 `.env` 文件；应用仍通过 `env_file` 读取 `deploy/pullback.env`。需要把秘密文件放在仓库外时，可以额外导出 `PULLBACK_ENV_FILE`，值为该文件的绝对路径。使用 `config --quiet`，不要把展开后的秘密配置复制进日志或工单。
 

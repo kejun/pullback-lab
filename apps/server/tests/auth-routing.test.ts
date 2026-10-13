@@ -15,8 +15,11 @@ afterEach(async () => {
   for (const directory of directories.splice(0))
     rmSync(directory, { recursive: true, force: true });
 });
-async function setup(configured = true) {
-  const app = await createApp({ password: configured ? password : undefined });
+async function setup(configured = true, origin?: string) {
+  const app = await createApp({
+    password: configured ? password : undefined,
+    origin,
+  });
   apps.push(app);
   return app;
 }
@@ -109,10 +112,14 @@ describe("API security follows the matched route", () => {
   );
 
   it.each(prefixes)(
-    "enforces Origin and CSRF before handlers through %s",
+    "allows tunnel origins while enforcing sessions and CSRF through %s",
     async (prefix) => {
-      const app = await setup();
-      const headers = await login(app);
+      const app = await setup(true, "https://configured.example");
+      const headers = {
+        ...(await login(app)),
+        host: "127.0.0.1:3000",
+        origin: "https://research.trycloudflare.com",
+      };
       const before = app.store.listInstruments();
       for (const suffix of [
         "/bootstrap",
@@ -120,17 +127,23 @@ describe("API security follows the matched route", () => {
       ]) {
         const response = await app.inject({
           url: `${prefix}${suffix}`,
-          headers: { ...headers, origin: "https://untrusted.example" },
+          headers,
         });
-        expect(response.statusCode).toBe(403);
-        expect(response.json().code).toBe("ORIGIN_REJECTED");
+        expect(response.statusCode).toBe(200);
+        if (suffix.startsWith("/events/stream")) {
+          expect(response.headers["content-type"]).toBe("text/event-stream");
+          expect(response.body).toContain("event: reset");
+        }
+        const anonymous = await app.inject({
+          url: `${prefix}${suffix}`,
+          headers: { origin: headers.origin, host: headers.host },
+        });
+        expect(anonymous.statusCode).toBe(401);
+        expect(anonymous.json().code).toBe("UNAUTHENTICATED");
       }
       for (const [requestHeaders, code] of [
         [{ cookie: headers.cookie }, "CSRF_REJECTED"],
-        [
-          { ...headers, origin: "https://untrusted.example" },
-          "ORIGIN_REJECTED",
-        ],
+        [{ cookie: headers.cookie, origin: headers.origin }, "CSRF_REJECTED"],
       ] as const) {
         const response = await app.inject({
           method: "POST",
@@ -142,6 +155,15 @@ describe("API security follows the matched route", () => {
         expect(response.json().code).toBe(code);
         expect(app.store.listInstruments()).toEqual(before);
       }
+      const write = await app.inject({
+        method: "POST",
+        url: `${prefix}/universe`,
+        headers,
+        payload: { symbol: "TUNNEL.US", market: "US" },
+      });
+      expect(write.statusCode).toBe(200);
+      expect(app.store.listInstruments()).toHaveLength(1);
+      expect(write.headers["access-control-allow-origin"]).toBeUndefined();
     },
   );
 
@@ -183,10 +205,10 @@ describe("API security follows the matched route", () => {
         expect(response.headers["cache-control"]).toBe("no-store");
         const foreign = await app.inject({
           url: `${prefix}${suffix}`,
-          headers: { origin: "https://untrusted.example" },
+          headers: { origin: "https://research.trycloudflare.com" },
         });
-        expect(foreign.statusCode).toBe(403);
-        expect(foreign.json().code).toBe("ORIGIN_REJECTED");
+        expect(foreign.statusCode).toBe(200);
+        expect(foreign.json()).toMatchObject(expected);
       }
       const loginUrl = `${prefix}/%6cogin?source=security-test`;
       const noMarker = await app.inject({
@@ -199,11 +221,10 @@ describe("API security follows the matched route", () => {
       const foreign = await app.inject({
         method: "POST",
         url: loginUrl,
-        headers: { ...marker, origin: "https://untrusted.example" },
+        headers: { ...marker, origin: "https://research.trycloudflare.com" },
         payload: { password },
       });
-      expect(foreign.statusCode).toBe(403);
-      expect(foreign.json().code).toBe("ORIGIN_REJECTED");
+      expect(foreign.statusCode).toBe(200);
       const headers = await login(app, loginUrl);
       const session = await app.inject({ url: `${prefix}/session`, headers });
       expect(session.json().authenticated).toBe(true);
