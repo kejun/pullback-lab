@@ -154,9 +154,9 @@ export function DecisionEvidence({ event }: { event: DecisionEvent }) {
           <dd className="breakable">
             {value(risk.feeVersion ?? feeSchedule.version)}
           </dd>
-          <dt>生效日期 / 币种</dt>
+          <dt>规则日期 / 币种</dt>
           <dd>
-            {value(feeSchedule.effectiveDate)} / {value(feeCurrency)}
+            {value(feeSchedule.ruleDate)} / {value(feeCurrency)}
           </dd>
           <dt>核算数量</dt>
           <dd>{value(risk.quantity)} 股</dd>

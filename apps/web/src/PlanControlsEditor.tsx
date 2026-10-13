@@ -30,7 +30,7 @@ export function PlanControlsEditor({
   const enabled = plan.chaseLimit?.enabled === true;
   const complete = Boolean(
     schedule?.version.trim() &&
-    schedule.effectiveDate &&
+    schedule.ruleDate &&
     [schedule.buy, schedule.sell].every((side) =>
       feeFields.every(([field]) => (side[field] ?? "").trim() !== ""),
     ),
@@ -132,7 +132,7 @@ export function PlanControlsEditor({
                   },
                   currency,
                   version: "",
-                  effectiveDate: "",
+                  ruleDate: "",
                   confirmed: false,
                 })
               }
@@ -178,14 +178,17 @@ export function PlanControlsEditor({
               </div>
             </div>
             <div className="field">
-              <label htmlFor={`${id}-effective`}>费用规则生效日期</label>
+              <label htmlFor={`${id}-effective`}>费用规则日期</label>
+              <small>
+                本次核对所引用资料的日期，不表示生效区间；不能晚于该市场今天。
+              </small>
               <input
                 id={`${id}-effective`}
                 type="date"
                 required
-                value={schedule.effectiveDate ?? ""}
+                value={schedule.ruleDate ?? ""}
                 onChange={(event) =>
-                  editSchedule({ effectiveDate: event.target.value })
+                  editSchedule({ ruleDate: event.target.value })
                 }
               />
             </div>
@@ -233,13 +236,13 @@ export function PlanControlsEditor({
                   onFeeChange({ ...schedule, confirmed: event.target.checked })
                 }
               />
-              <span>我已核对本计划买卖两侧全部适用费用、币种及生效日期。</span>
+              <span>我已核对本计划买卖两侧全部适用费用、币种及规则日期。</span>
             </label>
             {!schedule.confirmed && (
               <p className="support-warning" role="status">
                 {complete
                   ? "费用规则尚未核对，风险检查不会通过。修改任何费用字段后须重新确认。"
-                  : "请填写全部费用项目、版本及生效日期，再确认费用规则。"}
+                  : "请填写全部费用项目、版本及规则日期，再确认费用规则。"}
               </p>
             )}
             <button

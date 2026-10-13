@@ -186,7 +186,7 @@ export interface FeeSchedule {
   version: string;
   confirmed: boolean;
   /** User-supplied rule date; older pure-kernel fixtures may omit it. */
-  effectiveDate?: string;
+  ruleDate?: string;
 }
 export interface ChaseLimit {
   enabled: boolean;

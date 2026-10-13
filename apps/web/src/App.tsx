@@ -3703,7 +3703,7 @@ function ConflictPanel({
       ],
       ["费用方式", input.feeSchedule ? "完整费用规则" : "旧版固定费用"],
       ["费用规则版本", input.feeSchedule?.version ?? "未记录"],
-      ["费用规则生效日期", input.feeSchedule?.effectiveDate ?? "未记录"],
+      ["费用规则日期", input.feeSchedule?.ruleDate ?? "未记录"],
       ["费用币种", input.feeSchedule?.currency ?? "资金快照对应报价币种"],
       [
         "计划费用确认",

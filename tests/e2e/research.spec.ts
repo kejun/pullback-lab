@@ -1,4 +1,5 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
+import { writeFile } from "node:fs/promises";
 import Decimal from "decimal.js";
 import type {
   Bootstrap,
@@ -283,17 +284,55 @@ async function recordControlFonts(page: Page, name: string) {
     });
     const fonts = await session.send("CSS.getPlatformFontsForNode", { nodeId });
     expect(fonts.fonts.some((font) => font.glyphCount > 0)).toBe(true);
+    const report = {
+      chromium: page.context().browser()?.version(),
+      ...fonts,
+    };
+    const reportPath = test
+      .info()
+      .outputPath(`plan-controls-${name}-fonts.json`);
+    await writeFile(reportPath, JSON.stringify(report, null, 2), "utf8");
     await test.info().attach(`plan-controls-${name}-fonts`, {
-      body: JSON.stringify(
-        { chromium: page.context().browser()?.version(), ...fonts },
-        null,
-        2,
-      ),
+      path: reportPath,
       contentType: "application/json",
     });
+    console.log(`plan-controls-${name}-fonts`, JSON.stringify(report));
   } finally {
     await session.detach();
   }
+}
+async function expectControlCenterReachable(control: Locator) {
+  await expect(control).toBeVisible();
+  await expect
+    .poll(
+      () =>
+        control.evaluate((node: HTMLInputElement) => {
+          const rect = node.getBoundingClientRect();
+          const x = rect.left + rect.width / 2;
+          const y = rect.top + rect.height / 2;
+          if (
+            x < 0 ||
+            x >= window.innerWidth ||
+            y < 0 ||
+            y >= window.innerHeight
+          )
+            return false;
+          const hit = document.elementFromPoint(x, y);
+          return (
+            hit !== null &&
+            (hit === node ||
+              node.contains(hit) ||
+              Array.from(node.labels ?? []).some((label) =>
+                label.contains(hit),
+              ))
+          );
+        }),
+      {
+        message:
+          "The control center must be reachable without a navigation overlay",
+      },
+    )
+    .toBe(true);
 }
 async function saveControlPlan(page: Page, planId?: string): Promise<Plan> {
   const response = page.waitForResponse(
@@ -348,9 +387,7 @@ async function fillControlFees(page: Page, version: string) {
     await input.fill(value);
   }
   await controls.getByLabel("费用规则版本", { exact: true }).fill(version);
-  await controls
-    .getByLabel("费用规则生效日期", { exact: true })
-    .fill("2026-10-01");
+  await controls.getByLabel("费用规则日期", { exact: true }).fill("2026-10-01");
   await expect(controls.getByLabel("费用币种", { exact: true })).toHaveValue(
     "USD",
   );
@@ -418,7 +455,7 @@ test("plan controls save real versions, reprice quantity, preserve CAS drafts an
   expect(full.version).toBe(2);
   expect(full.chaseLimit).toEqual({ enabled: true, maxPercent: "1.7500" });
   expect(full.feeSchedule?.confirmed).toBe(true);
-  expect(full.feeSchedule?.effectiveDate).toBe("2026-10-01");
+  expect(full.feeSchedule?.ruleDate).toBe("2026-10-01");
   const priced = await checkControlRisk(page, full.id);
   expect(priced.passed).toBe(true);
   expect(priced.quantity).toBeLessThan(legacyRisk.quantity);
@@ -428,6 +465,15 @@ test("plan controls save real versions, reprice quantity, preserve CAS drafts an
   await recordControlFonts(page, "desktop");
   await controls.screenshot({
     path: test.info().outputPath("plan-controls-desktop.png"),
+  });
+  await controls
+    .getByRole("heading", { name: "追价上限", exact: true })
+    .evaluate((node) =>
+      node.scrollIntoView({ block: "start", behavior: "instant" }),
+    );
+  await page.screenshot({
+    path: test.info().outputPath("plan-controls-desktop-top-viewport.png"),
+    fullPage: false,
   });
 
   // Record a real event first, so later saved versions must not rewrite its controls.
@@ -494,9 +540,7 @@ test("plan controls save real versions, reprice quantity, preserve CAS drafts an
     .getByLabel("费用规则版本", { exact: true })
     .fill("ui-local-fees-v2");
   await confirmation.check();
-  await controls
-    .getByLabel("费用规则生效日期", { exact: true })
-    .fill("2026-10-02");
+  await controls.getByLabel("费用规则日期", { exact: true }).fill("2026-10-02");
   await expect(confirmation).not.toBeChecked();
   await confirmation.check();
   await controls.getByLabel("费用币种", { exact: true }).selectOption("CNY");
@@ -591,6 +635,31 @@ test("plan controls are editable and persisted at 390px without invented rates",
   await recordControlFonts(page, "390px");
   await controls.screenshot({
     path: test.info().outputPath("plan-controls-390px.png"),
+  });
+  // Keep the real fixed navigation visible. A tall element capture alone cannot
+  // show that controls are reachable in an ordinary scrolled viewport.
+  await controls
+    .getByRole("heading", { name: "追价上限", exact: true })
+    .evaluate((node) =>
+      node.scrollIntoView({ block: "start", behavior: "instant" }),
+    );
+  await page.screenshot({
+    path: test.info().outputPath("plan-controls-390px-top-viewport.png"),
+    fullPage: false,
+  });
+  const lastRate = controls.getByLabel("卖出成交额费率（小数比例）", {
+    exact: true,
+  });
+  const feeConfirmation = controls.getByLabel(/我已核对本计划买卖两侧/);
+  await lastRate.evaluate((node) =>
+    node.scrollIntoView({ block: "center", behavior: "instant" }),
+  );
+  await feeConfirmation.scrollIntoViewIfNeeded();
+  await expectControlCenterReachable(lastRate);
+  await expectControlCenterReachable(feeConfirmation);
+  await page.screenshot({
+    path: test.info().outputPath("plan-controls-390px-fees-viewport.png"),
+    fullPage: false,
   });
   expect(
     await page.evaluate(

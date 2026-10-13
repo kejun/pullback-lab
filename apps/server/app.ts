@@ -124,7 +124,7 @@ const feeScheduleSchema = z
     sell: feeSideSchema,
     currency: z.enum(["USD", "CNY"]),
     version: z.string().trim().min(1).max(120),
-    effectiveDate: z
+    ruleDate: z
       .string()
       .regex(/^\d{4}-\d{2}-\d{2}$/)
       .refine((value) => {
@@ -634,6 +634,20 @@ export async function createApp(
   function validatePlan(body: unknown): PlanInput {
     const p = planSchema.parse(body);
     const instrument = store.instrument(p.instrumentId).instrument;
+    // Provenance date, not a future effective-date schedule. Trust only the server clock.
+    const marketToday = new Intl.DateTimeFormat("en-CA", {
+      timeZone:
+        instrument.market === "US" ? "America/New_York" : "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(now());
+    if (p.feeSchedule && p.feeSchedule.ruleDate > marketToday)
+      throw new ApiError(
+        400,
+        "FEE_RULE_DATE_IN_FUTURE",
+        "费用规则日期不能晚于当前市场日期",
+      );
     assertCurrentResearchHistory(store.db, p.instrumentId, p.researchHistoryId);
     if (
       !new Decimal(p.stop).lt(p.lower) ||

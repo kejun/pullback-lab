@@ -25,7 +25,7 @@ const schedule: FeeSchedule = {
   },
   currency: "USD",
   version: "synthetic-fees-2026-10-09",
-  effectiveDate: "2026-10-09",
+  ruleDate: "2026-10-09",
   confirmed: true,
 };
 const accounts = {
@@ -42,11 +42,11 @@ afterEach(async () => {
   for (const app of apps.splice(0)) await app.close();
   for (const x of closed.splice(0)) await x.close();
 });
-async function setup() {
+async function setup(at = now) {
   const app = await createApp({
     password: "private-test-password",
     demo: true,
-    now: () => now,
+    now: () => at,
   });
   apps.push(app);
   const login = await app.inject({
@@ -203,12 +203,50 @@ describe("immutable plan fees and controls at API boundaries", () => {
       expect(app.store.reservations()).toEqual([]);
     },
   );
+  it("rejects future fee provenance dates against the server market day on save and edit", async () => {
+    const { app, post } = await setup(Date.parse("2026-10-13T01:00:00Z"));
+    // It is October 12 in New York, even though the UTC date is October 13.
+    const source = {
+      ...input,
+      feeSchedule: { ...schedule, ruleDate: "2026-10-12" },
+    };
+    const created = await post("/api/plans", source);
+    expect(created.statusCode).toBe(200);
+    const plan = created.json<Plan>();
+    const future = {
+      ...source,
+      sessionDate: "2026-10-30",
+      feeSchedule: { ...schedule, ruleDate: "2026-10-13" },
+    };
+    expect((await post("/api/plans", future)).json()).toMatchObject({
+      code: "FEE_RULE_DATE_IN_FUTURE",
+    });
+    const before = app.store.planVersion(plan);
+    const edited = await post(`/api/plans/${plan.id}/versions`, {
+      ...future,
+      expectedVersion: plan.version,
+      expectedAttemptId: null,
+    });
+    expect(edited.statusCode).toBe(400);
+    expect(edited.json().code).toBe("FEE_RULE_DATE_IN_FUTURE");
+    expect(app.store.planVersion(plan)).toEqual(before);
+    expect(app.store.plan(plan.id).version).toBe(1);
+  });
+  it("uses Shanghai's market day for fee provenance dates", async () => {
+    const { post } = await setup(Date.parse("2026-10-12T17:00:00Z"));
+    const response = await post("/api/plans", {
+      ...input,
+      instrumentId: "DEMO-CN-A",
+      feeSchedule: { ...schedule, currency: "CNY", ruleDate: "2026-10-13" },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+  });
   it.each([
     { buy: { ...schedule.buy, perShare: undefined } },
     { sell: { ...schedule.sell, notionalRate: "-0.1" } },
     { currency: "EUR" },
     { version: " " },
-    { effectiveDate: "2026-02-30" },
+    { ruleDate: "2026-02-30" },
     { buy: { ...schedule.buy, unknownFee: "1" } },
   ])(
     "rejects incomplete or malformed fee fields rather than inventing components: %j",
