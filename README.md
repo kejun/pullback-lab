@@ -40,7 +40,7 @@ npm run test:e2e
 | `apps/web`             | React 三页工作台、Lightweight Charts 图表、SSE 提醒                  |
 | `tests/e2e`            | 浏览器中的研究、回放和反馈闭环                                       |
 
-正式收盘运行链已经具备服务端适配器边界、持久分钟/尝试、真实时钟截止、资金复核与事务事件。当前只有隔离测试适配器，生产启动不安装真实适配器，真实行情继续关闭；不会把人工历史或采样回执升级为行动信号。见[正式收盘运行契约](docs/closed-bar-runtime.md)。
+正式收盘运行链已经具备服务端适配器边界、持久分钟/尝试、真实时钟截止、资金复核与事务事件。现已提供受已审计服务器上下文门控的Longbridge SDK适配器及日线研究消费接线；默认生产启动不安装适配器，真实行情继续关闭；不会把人工历史或采样回执升级为行动信号。见[正式收盘运行契约](docs/closed-bar-runtime.md)及[Longbridge 接入验收清单](docs/longbridge-closed-adapter.md)。
 
 SQLite 使用 WAL、`synchronous=FULL`、`BEGIN IMMEDIATE` 和事件唯一约束。事件保存冻结输入与哈希；前端重连可重复投递，按事件 ID 合并。资金变更使用 generation 校验，计划操作同时校验 version 与 attemptId；旧表单或旧标签页返回 409 并保留输入。
 

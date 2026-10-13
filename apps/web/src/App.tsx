@@ -154,6 +154,7 @@ function healthReason(reason: string): string {
         MISSING_HISTORY: "尚无完成日线",
         INSUFFICIENT_HISTORY: "完成日线数量不足",
         HISTORY_NOT_VERIFIED: "历史来源尚未验证",
+        SERVER_CONTEXT_DAILY_VERIFIED: "日线与已审计服务端来源精确匹配",
         ADJUSTMENT_PROVENANCE_UNVERIFIED: "复权来源尚未验证",
         SYNTHETIC_FIXTURE: "合成演练输入",
         SYNTHETIC_DATA: "合成演练输入",
@@ -1881,7 +1882,9 @@ export default function App() {
                                   ? "合成数据"
                                   : c.health.state === "MISSING"
                                     ? "缺少历史数据"
-                                    : "数据待核验"}
+                                    : c.health.state === "VERIFIED"
+                                      ? "日线依据已核验"
+                                      : "数据待核验"}
                               </small>
                               <div className="table-reason">
                                 {c.health.reasons.map(healthReason).join("；")}
@@ -2094,6 +2097,12 @@ export default function App() {
                         {chartHistoryOverride && (
                           <p className="evidence-notice">
                             当前为只读查阅图表，草稿未修改。返回当前草稿图表后再选择锚点、调价或保存。
+                          </p>
+                        )}
+                        {chart.providerContext && (
+                          <p className="evidence-notice" aria-label="日线来源依据">
+                            日线依据已核验 · {chart.providerContext.source} · 价格基准 {chart.providerContext.basisDate}。
+                            仅为日线研究依据，正式监测仍须单独核验。
                           </p>
                         )}
                         <ResearchHistoryChartEvidence

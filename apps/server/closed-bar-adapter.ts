@@ -214,6 +214,7 @@ export function trustedClosedSupport(
   if (!row) return null;
   const c = JSON.parse(row.json) as StoredClosedContext;
   if (
+    c.basisKnownAt > now ||
     c.instrumentHash !== closedHash(instrument) ||
     c.dailyHash !== closedHash(bars) ||
     (sessionDate && c.session.date !== sessionDate) ||

@@ -59,7 +59,7 @@ export interface ScreeningSettings {
 }
 export interface CandidateRow extends Candidate {
   manual: boolean;
-  origin: "MANUAL" | "SYNTHETIC" | "IMPORTED";
+  origin: "MANUAL" | "SYNTHETIC" | "IMPORTED" | "PROVIDER";
   screeningStatus: "PASS" | "FAIL" | "UNKNOWN";
   /** Last completed bar used in the calculation, UTC seconds. */
   dataCutoff: number | null;
@@ -67,7 +67,7 @@ export interface CandidateRow extends Candidate {
   knownAt: number | null;
   turnoverBasis: "PROVIDER" | "ESTIMATED" | "MISSING";
   health: {
-    state: "SYNTHETIC" | "UNKNOWN" | "MISSING";
+    state: "SYNTHETIC" | "UNKNOWN" | "MISSING" | "VERIFIED";
     reasons: string[];
     ignoredUnfinished: number;
     ignoredFuture: number;
