@@ -195,3 +195,17 @@ it("allows a new session-first plan but never reuses a same-session attempt", ()
     sessionUnknown: true,
   });
 });
+
+it("requires exact instrument tick eligibility for an explicit intrabar plan", () => {
+  const eligible = structuredClone(snapshot);
+  eligible.availability.instruments[0].tickEligible = true;
+  eligible.availability.instruments[0].tickReason = null;
+  expect(
+    formalMonitorControls({ ...plan, mode: "INTRABAR_CROSS" }, eligible)
+      .canActivate,
+  ).toBe(true);
+  eligible.availability.instruments[0].tickEligible = false;
+  expect(
+    formalMonitorControls({ ...plan, mode: "INTRABAR_CROSS" }, eligible).reason,
+  ).toContain("盘中逐笔模式未开放");
+});
