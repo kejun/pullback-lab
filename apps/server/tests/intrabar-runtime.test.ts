@@ -458,4 +458,25 @@ describe("durable capability-gated intrabar runtime", () => {
       ).toBe("MATCH");
     },
   );
+  it.each(["101", "100.8"])(
+    "blocks a newer quote %s until continuous tick evidence reaches it",
+    async (price) => {
+      const x = await setup({
+        autoDrain: false,
+        planInput: { entryMax: "100.9" },
+      });
+      x.arm();
+      x.runner.drain();
+      x.packet(OPEN + 61000, ["100.6", "100.62"]);
+      x.setNow(OPEN + 62000);
+      x.adapter.quote(x.now(), price);
+      x.runner.drain();
+      expect(entries(x)).toHaveLength(0);
+      const blocked = x.store.events().find((e) => e.type === "ENTRY_BLOCKED")!;
+      expect(blocked.reasons).toContain("DATA_NOT_HEALTHY");
+      expect(x.store.decisionInput(blocked.id).riskInput).toMatchObject({
+        quote: { price, at: OPEN + 62000 },
+      });
+    },
+  );
 });

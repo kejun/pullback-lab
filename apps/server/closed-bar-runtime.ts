@@ -617,16 +617,24 @@ export class ClosedBarRuntime {
               (x) => x.q.at >= config.activatedAt,
             )
           : [];
-      const quotes = [...this.knownQuotes(row, now), ...tickQuotes].filter(
+      const ordinaryQuotes = this.knownQuotes(row, now).filter(
         (x) => x.q.at >= config.activatedAt,
       );
-      // Provider packet/position order, never replay receipt order, defines an intrabar last trade.
+      const quotes = [...ordinaryQuotes, ...tickQuotes];
+      const latestSnapshot = ordinaryQuotes
+        .toSorted((a, b) => a.q.at - b.q.at || a.r.seq - b.r.seq)
+        .at(-1)?.q;
+      const chainTail = tickQuotes.at(-1)?.q;
+      // At equal event time the verified packet/position chain wins over unordered snapshots.
+      // A strictly newer snapshot is material, but cannot repair missing tick coverage.
+      const newerUnalignedQuote =
+        config.mode === "INTRABAR_CROSS" &&
+        latestSnapshot &&
+        (!chainTail || latestSnapshot.at > chainTail.at);
       const latest =
-        config.mode === "INTRABAR_CROSS" && tickQuotes.length
-          ? tickQuotes.at(-1)!.q
-          : quotes
-              .toSorted((a, b) => a.q.at - b.q.at || a.r.seq - b.r.seq)
-              .at(-1)?.q;
+        config.mode === "INTRABAR_CROSS" && chainTail && !newerUnalignedQuote
+          ? chainTail
+          : latestSnapshot;
       const stop = quotes.find((x) => new Decimal(x.q.price).lte(config.stop));
       let knownStop = stop
         ? { price: stop.q.price, at: stop.q.at, receivedAt: stop.r.received_at }
@@ -689,6 +697,7 @@ export class ClosedBarRuntime {
         capability: assessCapability(c.capability, now).level,
         dataHealthy:
           Boolean(stream.healthy) &&
+          !newerUnalignedQuote &&
           this.connected &&
           row.connection_epoch === this.connectionEpoch,
         ...(latest ? { quote: { price: latest.price, at: latest.at } } : {}),
