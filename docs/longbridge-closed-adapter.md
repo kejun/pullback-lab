@@ -44,15 +44,15 @@ SDK 没有显式 close/cancel 及连接代际通知。原运行器关闭等待�
 
 核对日期：2026-10-13；代码依赖锁定 longbridge 5.2.0，未来网页和包变更须重新核验。
 
-| 官方来源 | 可用事实 | 不足以证明 |
-| --- | --- | --- |
-| [开始使用](https://open.longbridge.com/docs/getting-started) | 时间戳 UTC 编码 | 日线标签和分钟时间锚点的具体映射 |
-| [历史蜡烛](https://open.longbridge.com/docs/quote/pull/history-candlestick) | NoAdjust、常规时段参数、最多1000条 | 历史日线最终状态、完整证券交易历史、股数单位、修订保证 |
-| [闭合蜡烛推送](https://open.longbridge.com/zh-HK/docs/quote/push/candlestick) | Confirmed 在周期结束时回调 | 不修订、无丢失、空成交行为、断线连续性 |
-| [交易日](https://open.longbridge.com/docs/quote/pull/trade-day) | 最近一年内、至多一个月窗口的交易日与半日市列表 | 更早日历和逐日完整时段 |
-| [交易时段](https://open.longbridge.com/docs/quote/pull/trade-session) | 当日市场时段 | 历史半日市小时；示例CN至14:57不能直接当全天15:00收盘规则 |
-| [公司行动](https://open.longbridge.com/docs/fundamental/fundamental/corporate-actions) | SDK corpAction(symbol) 返回事件描述 | 结构化拆股比例、正确生效时刻、完整覆盖及空列表无拆股证明 |
-| [Node SDK](https://longbridge.github.io/openapi/nodejs/classes/QuoteContext.html) | 实际订阅、回调和退订接口 | 逐笔包级 sequence 或显式关闭/取消能力 |
+| 官方来源                                                                               | 可用事实                                       | 不足以证明                                               |
+| -------------------------------------------------------------------------------------- | ---------------------------------------------- | -------------------------------------------------------- |
+| [开始使用](https://open.longbridge.com/docs/getting-started)                           | 时间戳 UTC 编码                                | 日线标签和分钟时间锚点的具体映射                         |
+| [历史蜡烛](https://open.longbridge.com/docs/quote/pull/history-candlestick)            | NoAdjust、常规时段参数、最多1000条             | 历史日线最终状态、完整证券交易历史、股数单位、修订保证   |
+| [闭合蜡烛推送](https://open.longbridge.com/zh-HK/docs/quote/push/candlestick)          | Confirmed 在周期结束时回调                     | 不修订、无丢失、空成交行为、断线连续性                   |
+| [交易日](https://open.longbridge.com/docs/quote/pull/trade-day)                        | 最近一年内、至多一个月窗口的交易日与半日市列表 | 更早日历和逐日完整时段                                   |
+| [交易时段](https://open.longbridge.com/docs/quote/pull/trade-session)                  | 当日市场时段                                   | 历史半日市小时；示例CN至14:57不能直接当全天15:00收盘规则 |
+| [公司行动](https://open.longbridge.com/docs/fundamental/fundamental/corporate-actions) | SDK corpAction(symbol) 返回事件描述            | 结构化拆股比例、正确生效时刻、完整覆盖及空列表无拆股证明 |
+| [Node SDK](https://longbridge.github.io/openapi/nodejs/classes/QuoteContext.html)      | 实际订阅、回调和退订接口                       | 逐笔包级 sequence 或显式关闭/取消能力                    |
 
 ## 真正接入前的最小验收清单
 
