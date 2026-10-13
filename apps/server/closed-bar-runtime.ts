@@ -354,6 +354,12 @@ export class ClosedBarRuntime {
                   (r) =>
                     r.connection_epoch === this.connectionEpoch &&
                     r.phase === "RUNNING" &&
+                    Boolean(
+                      this.stream(
+                        r.connection_epoch,
+                        this.context(r.context_id).instrument.id,
+                      )?.healthy,
+                    ) &&
                     ["WAIT_RETEST", "ARMED", "TRIGGERED"].includes(
                       this.store.plan(r.plan_id).status,
                     ),
@@ -463,7 +469,9 @@ export class ClosedBarRuntime {
         q.source !== c.source ||
         q.sessionId !== c.session.id ||
         !Number.isSafeInteger(q.at) ||
-        q.at < c.session.open ||
+        !c.session.intervals.some(
+          (interval) => q.at >= interval.start && q.at <= interval.end,
+        ) ||
         q.at > r.received_at ||
         q.at > this.now() ||
         !new Decimal(q.price).isFinite() ||
@@ -1395,20 +1403,26 @@ export class ClosedBarRuntime {
   }
   async stop(): Promise<void> {
     if (this.closed) return;
-    this.disconnect("RUNTIME_STOPPED");
-    this.closed = true;
-    this.connected = false;
-    if (this.timer) clearInterval(this.timer);
-    this.timer = undefined;
-    this.abort.abort();
-    if (this.options.adapter)
-      try {
-        await withDeadline(
-          () => this.options.adapter!.stop(),
-          this.options.adapterTimeoutMs ?? 2000,
-        );
-      } catch {
-        /* The runtime and all callbacks remain fenced after bounded shutdown. */
-      }
+    try {
+      this.disconnect("RUNTIME_STOPPED");
+    } finally {
+      // Storage failure must not leave the scheduler or provider alive. Preserve
+      // the persistence error for the caller while always fencing this instance.
+      this.closed = true;
+      this.connected = false;
+      this.opening = false;
+      if (this.timer) clearInterval(this.timer);
+      this.timer = undefined;
+      this.abort.abort();
+      if (this.options.adapter)
+        try {
+          await withDeadline(
+            () => this.options.adapter!.stop(),
+            this.options.adapterTimeoutMs ?? 2000,
+          );
+        } catch {
+          /* The runtime and all callbacks remain fenced after bounded shutdown. */
+        }
+    }
   }
 }

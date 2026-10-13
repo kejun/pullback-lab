@@ -426,3 +426,69 @@ it("keeps the entire startup handshake single-flight and cleans up resources ope
     store.close();
   }
 });
+
+it("releases an unhealthy stream after entry without releasing the pending-feedback reservation", async () => {
+  const x = await setup();
+  x.minute(0, { open: "100.5", high: "100.6", low: "100", close: "100.5" });
+  x.minute(1, { open: "100.5", high: "101.2", low: "100.4", close: "101" });
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(x.adapter.subscriptions).toEqual([x.plan.instrumentId]);
+  const reservations = x.store.db.prepare("SELECT * FROM reservations").all();
+  expect(reservations).not.toHaveLength(0);
+  x.setNow(OPEN + 210001);
+  x.runner.flush();
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(x.adapter.subscriptions).toEqual([]);
+  expect(x.store.plan(x.plan.id).status).toBe("TRIGGERED");
+  expect(x.store.db.prepare("SELECT * FROM reservations").all()).toEqual(
+    reservations,
+  );
+  expect(
+    x.store.events().filter((e) => e.type === "ENTRY_TRIGGERED"),
+  ).toHaveLength(1);
+});
+
+it("always closes the provider and fences callbacks when persisting shutdown fails", async () => {
+  const x = await setup();
+  await new Promise((resolve) => setImmediate(resolve));
+  let stopped = 0;
+  x.adapter.stop = async () => {
+    stopped++;
+  };
+  x.runner.startScheduler(10);
+  x.store.db.exec(`CREATE TRIGGER fail_shutdown BEFORE UPDATE ON closed_streams
+    BEGIN SELECT RAISE(ABORT, 'TEST_STORAGE_FAILURE'); END`);
+  await expect(x.runner.stop()).rejects.toThrow("TEST_STORAGE_FAILURE");
+  expect(stopped).toBe(1);
+  x.store.db.exec("DROP TRIGGER fail_shutdown");
+  const before = x.store.db
+    .prepare("SELECT COUNT(*) n FROM closed_receipts")
+    .get();
+  x.minute(0, { open: "100.5", high: "100.6", low: "100", close: "100.5" });
+  x.minute(1, { open: "100.5", high: "101.2", low: "100.4", close: "101" });
+  x.runner.flush();
+  expect(
+    x.store.db.prepare("SELECT COUNT(*) n FROM closed_receipts").get(),
+  ).toEqual(before);
+  expect(x.store.events().some((e) => e.type === "ENTRY_TRIGGERED")).toBe(
+    false,
+  );
+  await expect(x.runner.start()).rejects.toThrow();
+});
+
+it("rejects a provider quote outside its verified regular-session intervals", async () => {
+  const x = await setup();
+  x.setNow(x.adapter.session.close + 1);
+  x.adapter.quote(x.now(), "101");
+  expect(
+    x.store.db
+      .prepare(
+        "SELECT status FROM closed_receipt_results ORDER BY seq DESC LIMIT 1",
+      )
+      .get(),
+  ).toEqual({ status: "INVALID_QUOTE" });
+  expect(x.runner.availability().liveEligible).toBe(false);
+  expect(x.store.events().some((e) => e.type === "ENTRY_TRIGGERED")).toBe(
+    false,
+  );
+});
