@@ -25,6 +25,18 @@ const bar: ProviderBarSample = {
 };
 function fixture(overrides: Partial<ProbeOptions> = {}) {
   const adapter = {
+    source: "longbridge-node-5.2.0" as const,
+    fetchDailyHistoryPage: vi.fn(
+      async (symbol: string, from: string, _through: string) =>
+        Array.from({ length: 6 }, (_, i) => ({
+          ...bar,
+          symbol,
+          period: "1D" as const,
+          timestamp: Date.parse(`${from}T05:00:00Z`) + i * 86400000,
+          receivedAt: at,
+          finality: "UNKNOWN" as const,
+        })),
+    ),
     quoteLevelEvidence: vi.fn(async () => "LV1"),
     quotePackagesEvidence: vi.fn(async () => [
       { key: "test", name: "fixture", startAt: at, endAt: at + 1000 },
@@ -42,11 +54,13 @@ function fixture(overrides: Partial<ProbeOptions> = {}) {
       { symbol: symbols[0], price: "101", timestamp: at, receivedAt: at },
     ]),
     fetchBars: vi.fn(async () => [bar]),
-    calendarEvidence: vi.fn(async () => ({
-      tradingDays: ["2026-10-12"],
-      halfDays: [],
-      sessionHoursVerified: false as const,
-    })),
+    calendarEvidence: vi.fn(
+      async (_market: "US" | "CN", from: string, _through: string) => ({
+        tradingDays: [from],
+        halfDays: [],
+        sessionHoursVerified: false as const,
+      }),
+    ),
     observeConfirmed: vi.fn(async () => [bar]),
   };
   const factory = vi.fn(async () => adapter);
@@ -227,5 +241,118 @@ describe("partial read-only evidence probe", () => {
     expect((await task).exitCode).toBe(2);
     expect(f.adapter.observeConfirmed).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("explicit date-window probe collection", () => {
+  const historyWindow = { from: "2026-01-01", through: "2026-04-10" };
+  it("retains every raw receipt and matching historical calendar page beyond the five-sample preview", async () => {
+    const f = fixture({
+      symbols: ["AAPL.US"],
+      observeSeconds: 0,
+      historyWindow,
+    });
+    const { report, exitCode } = await runMarketProbe(f.options);
+    expect(exitCode).toBe(2);
+    expect(f.adapter.fetchBars).not.toHaveBeenCalled();
+    expect(f.adapter.fetchDailyHistoryPage.mock.calls).toEqual([
+      ["AAPL.US", "2026-01-01", "2026-03-31"],
+      ["AAPL.US", "2026-04-01", "2026-04-10"],
+    ]);
+    expect(f.adapter.calendarEvidence.mock.calls).toEqual([
+      ["US", "2026-01-01", "2026-03-31"],
+      ["US", "2026-04-01", "2026-04-10"],
+    ]);
+    const c = report.historyCaptures![0];
+    expect(c.pages.flatMap((p) => p.samples)).toHaveLength(12);
+    expect(c).toMatchObject({
+      ...historyWindow,
+      status: "SAMPLED",
+      capability: "UNKNOWN",
+      coverage: "UNKNOWN",
+      timestampAnchor: "UNKNOWN",
+      completedAt: at,
+    });
+    expect(
+      f.snapshots.some(
+        (r) =>
+          r.historyCaptures?.[0]?.pages.length === 1 &&
+          r.historyCaptures[0].calendarPages.length === 0,
+      ),
+    ).toBe(true);
+    const { prepareLongbridgeHistoryCandidates } =
+      await import("../../apps/server/longbridge-history-input.js");
+    expect(
+      prepareLongbridgeHistoryCandidates(c, { symbol: "AAPL.US", market: "US" })
+        .samples,
+    ).toHaveLength(12);
+  });
+  it("retains earlier pages and marks the capture incomplete when a later page fails", async () => {
+    const f = fixture({
+      symbols: ["AAPL.US"],
+      observeSeconds: 0,
+      historyWindow,
+    });
+    f.adapter.fetchDailyHistoryPage.mockRejectedValueOnce(
+      new Error("private-host-error"),
+    );
+    const { report, exitCode } = await runMarketProbe(f.options);
+    expect(exitCode).toBe(1);
+    expect(report.historyCaptures![0].status).toBe("INCOMPLETE");
+    expect(report.historyCaptures![0].pages).toHaveLength(1);
+    expect(report.historyCaptures![0].calendarPages).toHaveLength(2);
+    expect(JSON.stringify(report)).not.toContain("private-host-error");
+  });
+  it("does not issue calendar or further page requests after timeout, even after late settlement", async () => {
+    vi.useFakeTimers();
+    const f = fixture({
+      symbols: ["AAPL.US"],
+      observeSeconds: 0,
+      historyWindow,
+    });
+    let resolve!: (value: never[]) => void;
+    f.adapter.fetchDailyHistoryPage.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const task = runMarketProbe(f.options);
+    await vi.advanceTimersByTimeAsync(50);
+    const { report } = await task;
+    expect(report.historyCaptures![0].status).toBe("INCOMPLETE");
+    expect(f.adapter.fetchDailyHistoryPage).toHaveBeenCalledTimes(1);
+    expect(f.adapter.calendarEvidence).not.toHaveBeenCalled();
+    const before = JSON.stringify(report);
+    resolve([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(JSON.stringify(report)).toBe(before);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it.each([
+    { from: "2026-02-30", through: "2026-04-10" },
+    { from: "2026-04-10", through: "2026-01-01" },
+    { from: "2020-01-01", through: "2026-01-01" },
+  ])(
+    "blocks invalid date windows before adapter creation: %j",
+    async (historyWindow) => {
+      const f = fixture({ historyWindow });
+      expect((await runMarketProbe(f.options)).report.status).toBe("BLOCKED");
+      expect(f.factory).not.toHaveBeenCalled();
+    },
+  );
+  it("stops further requests if a historical checkpoint cannot be persisted", async () => {
+    const f = fixture({
+      symbols: ["AAPL.US"],
+      observeSeconds: 0,
+      historyWindow,
+      checkpoint: (report) => {
+        if (report.historyCaptures?.[0]?.pages.length)
+          throw new Error("journal full");
+      },
+    });
+    await expect(runMarketProbe(f.options)).rejects.toThrow("journal full");
+    expect(f.adapter.fetchDailyHistoryPage).toHaveBeenCalledTimes(1);
+    expect(f.adapter.calendarEvidence).not.toHaveBeenCalled();
   });
 });

@@ -93,3 +93,7 @@ SDK 日线的当地午夜标签不是开盘或确认时间。已审核该端点�
 默认关闭和 `market:check` 不加载 Longbridge 原生模块。准入后的start才在既有超时/代际所有权内异步加载；加载失败只输出安全代码 `LONGBRIDGE_SDK_LOAD_FAILED`，不回显native错误、路径或秘密。
 
 本批CI发现：锁定5.2.0 Linux x64二进制引用GLIBC_2.39，原Bookworm镜像的运行库不足。容器双阶段改用[官方Node24提供的trixie-slim](https://github.com/nodejs/docker-node/blob/main/versions.json)，最终镜像增加无凭据、无网络的SDK纯import检查。容器CI验证不代替用户Mac架构、SQLite与SDK的本机检查。
+
+## 独立历史研究
+
+完整日期窗口采集与不依赖实时资格的 EOD 研究现在使用独立服务器来源：见 [有界采集](bounded-history.md) 与 [独立 EOD 接线](eod-research.md)。`PULLBACK_RESEARCH_MODE` 默认 off；真实静态审核槽仍为空。仅此路径可以在历史单位/权限/日历/公司行动等均已审核时独立服务 US/CN 日线筛选和图表，不能开启分钟或盘中提醒。

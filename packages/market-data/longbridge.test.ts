@@ -88,6 +88,51 @@ describe("SDK adapter read-only boundary", () => {
       adapter.fetchDailyHistory("AAPL.US", "2026-02-30", "2026-04-10", admit),
     ).rejects.toThrow("INVALID_DATE");
   });
+  it("preserves repeated and conflicting raw history payloads instead of timestamp overwrite", async () => {
+    const first = candle(),
+      changed = { ...candle(), volume: 101 };
+    const historyCandlesticksByDate = vi
+      .fn()
+      .mockResolvedValueOnce([first, first])
+      .mockResolvedValueOnce([changed]);
+    const adapter = new LongbridgeReadOnlyAdapter(
+      { historyCandlesticksByDate } as unknown as QuoteContext,
+      () => 12345678900000,
+    );
+    const samples = await adapter.fetchDailyHistory(
+      "AAPL.US",
+      "2026-01-01",
+      "2026-04-10",
+      async () => {},
+    );
+    expect(samples).toHaveLength(3);
+    expect(samples.map((s) => s.volume)).toEqual(["100", "100", "101"]);
+    expect(
+      samples.every(
+        (s) => s.finality === "UNKNOWN" && s.volumeUnit === "UNVERIFIED",
+      ),
+    ).toBe(true);
+    expect(
+      historyCandlesticksByDate.mock.calls.every(
+        (args) => args[1] === 1000 && args[2] === 0 && args[5] === 0,
+      ),
+    ).toBe(true);
+  });
+  it("bounds a single history page and rejects oversized provider responses", async () => {
+    const historyCandlesticksByDate = vi
+      .fn()
+      .mockResolvedValue(Array(1001).fill(candle()));
+    const adapter = new LongbridgeReadOnlyAdapter({
+      historyCandlesticksByDate,
+    } as unknown as QuoteContext);
+    await expect(
+      adapter.fetchDailyHistoryPage("AAPL.US", "2026-01-01", "2026-04-01"),
+    ).rejects.toThrow("HISTORY_PAGE_OUT_OF_BOUNDS");
+    expect(historyCandlesticksByDate).not.toHaveBeenCalled();
+    await expect(
+      adapter.fetchDailyHistoryPage("AAPL.US", "2026-01-01", "2026-03-31"),
+    ).rejects.toThrow("HISTORY_PAGE_SAMPLE_LIMIT");
+  });
   it("does not infer same-day selling or price tick rules from provider lot size", async () => {
     const adapter = new LongbridgeReadOnlyAdapter({
       staticInfo: vi.fn().mockResolvedValue([

@@ -1,4 +1,8 @@
 import { createRequire } from "node:module";
+import {
+  HISTORY_MAX_JOURNAL_BYTES,
+  HISTORY_MAX_CHECKPOINT_BYTES,
+} from "../packages/market-data/history-capture.js";
 import { summarizeMarketProbe } from "../packages/market-data/probe-summary.js";
 import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -14,10 +18,13 @@ let exitCode = 2;
 let outputFailed = false;
 let summary = false;
 let reportSaved = false;
+let journalBytes = 0;
 try {
   const { values } = parseArgs({
     options: {
       symbols: { type: "string" },
+      "history-from": { type: "string" },
+      "history-through": { type: "string" },
       summary: { type: "boolean", default: false },
       "observe-seconds": { type: "string", default: "0" },
       output: { type: "string" },
@@ -25,10 +32,27 @@ try {
     allowPositionals: false,
     strict: true,
   });
-  summary = values.summary!;
+  const historyRequested =
+    values["history-from"] !== undefined ||
+    values["history-through"] !== undefined;
+  // Full raw history must have a private, create-only journal. Never print it to terminal.
+  summary = values.summary! || historyRequested;
+  if (
+    historyRequested &&
+    (!values["history-from"] || !values["history-through"] || !values.output)
+  )
+    throw new Error("HISTORY_WINDOW_AND_OUTPUT_REQUIRED");
   // Create only, owner-readable. JSONL checkpoints preserve prior evidence if a later step fails.
   if (values.output) output = openSync(values.output, "wx", 0o600);
   const result = await runMarketProbe({
+    ...(historyRequested
+      ? {
+          historyWindow: {
+            from: values["history-from"]!,
+            through: values["history-through"]!,
+          },
+        }
+      : {}),
     symbols: (values.symbols ?? "")
       .split(",")
       .map((x) => x.trim())
@@ -50,6 +74,12 @@ try {
       latest = report;
       if (output !== undefined) {
         const bytes = Buffer.from(`${JSON.stringify(report)}\n`);
+        if (
+          historyRequested &&
+          (bytes.length > HISTORY_MAX_CHECKPOINT_BYTES ||
+            journalBytes + bytes.length > HISTORY_MAX_JOURNAL_BYTES)
+        )
+          throw new Error("HISTORY_REPORT_SIZE_LIMIT");
         let offset = 0;
         while (offset < bytes.length) {
           const written = writeSync(
@@ -62,6 +92,7 @@ try {
           offset += written;
         }
         fsyncSync(output);
+        journalBytes += bytes.length;
         reportSaved = true;
       }
     },

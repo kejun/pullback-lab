@@ -233,6 +233,16 @@ export class Store {
         "INSTRUMENT_HAS_RESEARCH_HISTORY",
         "标的已有不可变历史研究资料，请保留其来源引用",
       );
+    if (
+      this.db
+        .prepare("SELECT 1 FROM eod_contexts WHERE instrument_id=? LIMIT 1")
+        .get(id)
+    )
+      throw new ApiError(
+        409,
+        "INSTRUMENT_HAS_RESEARCH_HISTORY",
+        "标的已有不可变日线研究资料，请保留其来源引用",
+      );
     if (this.plans().some((p) => p.instrumentId === id))
       throw new ApiError(
         409,
@@ -257,6 +267,12 @@ export class Store {
         )
         .get(id) as { json: string } | undefined;
       if (trusted) return JSON.parse(trusted.json).daily as Bar[];
+      const research = this.db
+        .prepare(
+          "SELECT c.json FROM eod_sources s JOIN eod_contexts c ON c.id=s.context_id WHERE s.instrument_id=?",
+        )
+        .get(id) as { json: string } | undefined;
+      if (research) return JSON.parse(research.json).daily as Bar[];
     }
     return (
       this.db
@@ -394,6 +410,9 @@ export class Store {
     return this.transaction(() => {
       if (reason === "CORPORATE_ACTION_EVIDENCE_CHANGED") {
         // Atomic with the immutable action generation and plan pause, even if no plan is active.
+        this.db
+          .prepare("DELETE FROM eod_sources WHERE instrument_id=?")
+          .run(instrumentId);
         this.db
           .prepare("DELETE FROM closed_sources WHERE instrument_id=?")
           .run(instrumentId);

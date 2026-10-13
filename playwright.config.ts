@@ -16,6 +16,7 @@ const scenarios = [
   "formal-monitor",
   "provider-research",
   "intrabar-monitor",
+  "eod-research",
 ] as const;
 
 export default defineConfig({
@@ -29,7 +30,7 @@ export default defineConfig({
     name,
     testMatch: `**/${name}.spec.ts`,
     use: {
-      baseURL: `http://127.0.0.1:${name === "intrabar-monitor" ? 4192 : name === "provider-research" ? 4191 : 4180 + index}`,
+      baseURL: `http://127.0.0.1:${name === "eod-research" ? 4193 : name === "intrabar-monitor" ? 4192 : name === "provider-research" ? 4191 : 4180 + index}`,
     },
   })),
   use: {
@@ -46,22 +47,26 @@ export default defineConfig({
   },
   webServer: scenarios.map((name, index) => ({
     command:
-      name === "intrabar-monitor"
-        ? "node --import tsx scripts/e2e-intrabar-monitor.ts"
-        : name === "provider-research"
-          ? "node --import tsx scripts/e2e-provider-research.ts"
-          : name === "formal-monitor"
-            ? "node --import tsx scripts/e2e-formal-monitor.ts"
-            : "node --import tsx scripts/e2e-server.ts",
-    url: `http://127.0.0.1:${name === "intrabar-monitor" ? 4192 : name === "provider-research" ? 4191 : 4180 + index}/api/health`,
+      name === "eod-research"
+        ? "node --import tsx scripts/e2e-eod-research.ts"
+        : name === "intrabar-monitor"
+          ? "node --import tsx scripts/e2e-intrabar-monitor.ts"
+          : name === "provider-research"
+            ? "node --import tsx scripts/e2e-provider-research.ts"
+            : name === "formal-monitor"
+              ? "node --import tsx scripts/e2e-formal-monitor.ts"
+              : "node --import tsx scripts/e2e-server.ts",
+    url: `http://127.0.0.1:${name === "eod-research" ? 4193 : name === "intrabar-monitor" ? 4192 : name === "provider-research" ? 4191 : 4180 + index}/api/health`,
     reuseExistingServer: false,
     env: {
       PORT: String(
-        name === "intrabar-monitor"
-          ? 4192
-          : name === "provider-research"
-            ? 4191
-            : 4180 + index,
+        name === "eod-research"
+          ? 4193
+          : name === "intrabar-monitor"
+            ? 4192
+            : name === "provider-research"
+              ? 4191
+              : 4180 + index,
       ),
       HOST: "127.0.0.1",
       PULLBACK_PASSWORD: "e2e-only-password",

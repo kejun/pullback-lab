@@ -81,6 +81,20 @@ export function validateClosedContext(
   input: ClosedBarContext,
   now: number,
 ): StoredClosedContext {
+  if (
+    !["LIVE_CLOSED_BAR", "LIVE_TICK"].includes(
+      assessCapability(input.capability, now).level,
+    )
+  )
+    throw new Error("LIVE_CAPABILITY_UNVERIFIED");
+  return validateDailyProvenance(input, now, "SESSION_OPEN");
+}
+/** Shared mechanical provenance checks only. This does not grant monitoring capability. */
+export function validateDailyProvenance(
+  input: ClosedBarContext,
+  now: number,
+  basis: "SESSION_OPEN" | "SESSION_CLOSE",
+): StoredClosedContext {
   const c = structuredClone(input);
   const fail = (code: string): never => {
     throw new Error(code);
@@ -142,12 +156,6 @@ export function validateClosedContext(
     c.calendar.verified !== true
   )
     fail("CLOSED_VERIFICATION_INVALID");
-  if (
-    !["LIVE_CLOSED_BAR", "LIVE_TICK"].includes(
-      assessCapability(c.capability, now).level,
-    )
-  )
-    fail("LIVE_CAPABILITY_UNVERIFIED");
   const resolved = resolveSession(
     [c.calendar],
     c.instrument.market,
@@ -177,7 +185,8 @@ export function validateClosedContext(
       !Number.isSafeInteger(b.receivedAt) ||
       b.receivedAt > c.basisKnownAt ||
       b.receivedAt < b.time * 1000 ||
-      b.time * 1000 >= session.open ||
+      b.time * 1000 >=
+        (basis === "SESSION_OPEN" ? session.open : session.close) ||
       (i > 0 && c.daily[i - 1].time >= b.time) ||
       !b.adjustmentVersion
     )

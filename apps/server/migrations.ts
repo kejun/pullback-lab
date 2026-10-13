@@ -1,3 +1,4 @@
+import { EOD_RESEARCH_SCHEMA_SQL } from "./eod-research-schema.js";
 import { INTRABAR_SCHEMA_SQL } from "./intrabar-schema.js";
 import { CLOSED_BAR_SCHEMA_SQL } from "./closed-bar-schema.js";
 import { RESEARCH_HISTORY_SCHEMA_SQL } from "./research-history-schema.js";
@@ -99,6 +100,7 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 10, apply: (db) => db.exec(RESEARCH_HISTORY_SCHEMA_SQL) },
   { version: 11, apply: (db) => db.exec(CLOSED_BAR_SCHEMA_SQL) },
   { version: 12, apply: (db) => db.exec(INTRABAR_SCHEMA_SQL) },
+  { version: 13, apply: (db) => db.exec(EOD_RESEARCH_SCHEMA_SQL) },
 ];
 
 /** All pending DDL and version records commit together, or all roll back. */

@@ -1,3 +1,5 @@
+import { prepareProductionResearch } from "../apps/server/production-research.js";
+import { auditedEodResearch } from "../apps/server/production-research-config.js";
 import { prepareProductionMarket } from "../apps/server/production-market.js";
 import { auditedLongbridgeConfiguration } from "../apps/server/production-market-config.js";
 
@@ -9,6 +11,7 @@ try {
       status: "CONFIGURATION_VALID",
       providerContacted: false,
       ...report,
+      research: prepareProductionResearch(auditedEodResearch).report,
     }),
   );
 } catch (error) {
