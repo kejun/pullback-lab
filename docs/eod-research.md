@@ -39,3 +39,7 @@ EOD 上下文强制清除 realtimeEntitlement/completeMinutes/sequence/continuou
 隔离测试验证 US/CN、周末/DST/半日市、端点量单位、全量 raw 哈希、逐日覆盖、权限/单位/最终历史未知拒绝、过期缓存、公司行动撤销/显式重审、启动无配置、实际鉴权 HTTP 图表及无实时资格。备份/恢复测试使用非空 EOD 审计资料。浏览器场景展示桌面与390px来源说明；最终结果以准确提交的 CI 为准。
 
 仍须实际主机采集、账户历史权限/留存/额度、真实单位/时间锚点及历史最终状态审计、完整日历与行动账本。正拆/反拆/现金分红的真实跨周期核对仍属于 KEJ-48，逐笔连续性仍属于 KEJ-56。此路径不把这些未完成验收改为通过。
+
+## 研究计划的支撑计算
+
+有效 EOD 来源也用于研究计划的 EMA、ATR 与锚定均价计算，与图表共享同一日线依据；计划日期截止仍只取此前已完成日线。保存草稿冻结独立 `researchContextId`，来源到期、撤回或变化后旧依据失效。研究快照始终 `ready=false` 并标 `EOD_RESEARCH_ONLY`，不设置正式 `providerContextId`，不开放 activate/recover，也不改变人工导入资料的 UNKNOWN 资格。

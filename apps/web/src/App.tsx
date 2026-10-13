@@ -2780,7 +2780,7 @@ export default function App() {
                             onChanged={(signal) => refresh(true, signal)}
                           />
                         )}
-                        {savedPlan && !savedPlan.supportSnapshot?.ready && (
+                        {savedPlan && !savedPlan.supportSnapshot?.ready && !savedPlan.supportSnapshot?.researchContextId && (
                           <small className="disabled-reason">
                             已保存版本缺少完整支撑证据。请选择有效家族并保存新版本。
                           </small>
