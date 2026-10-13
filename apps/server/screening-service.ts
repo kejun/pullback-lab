@@ -15,6 +15,7 @@ import {
   emptyMarketWorkerStatus,
   type MarketWorkerStatus,
 } from "./market-worker.js";
+import { trustedClosedSupport } from "./closed-bar-adapter.js";
 import { universeRevision } from "./universe-service.js";
 
 const hash = (value: unknown) =>
@@ -79,11 +80,17 @@ export class ScreeningService {
   ): CandidatePage {
     const snapshot = this.store.db.transaction(() => {
       const rows = this.store.listInstruments();
+      const series = rows.map((row) =>
+        this.store.bars(row.instrument.id, "1D"),
+      );
       return {
         rows,
         rules: this.store.screeningSettings(),
         revision: universeRevision(this.store),
-        series: rows.map((row) => this.store.bars(row.instrument.id, "1D")),
+        series,
+        trusted: rows.map((row, i) =>
+          trustedClosedSupport(this.store.db, row.instrument, series[i], now),
+        ),
       };
     })();
     const visible = snapshot.series.map((bars) =>
@@ -96,6 +103,7 @@ export class ScreeningService {
       rules: snapshot.rules.current,
       universe: snapshot.revision,
       bars: snapshot.series,
+      providerContexts: snapshot.trusted.map((context) => context?.id ?? null),
       visible: visible.map((bars) => bars.map((bar) => bar.id)),
     });
     const cacheHit = this.cached?.key === key;
@@ -104,12 +112,14 @@ export class ScreeningService {
         const bars = visible[index];
         const original = snapshot.series[index];
         const synthetic = syntheticEvidence(row, bars);
+        const trusted = snapshot.trusted[index];
+        const verified = synthetic || Boolean(trusted);
         const result = screenInstrument(row.instrument, bars, {
-          historyComplete: synthetic,
+          historyComplete: verified,
           unadjusted: synthetic,
           parameters: snapshot.rules.current?.parameters,
         });
-        if (!synthetic) {
+        if (!verified) {
           result.status = "UNKNOWN";
           result.reasons = [
             ...new Set([
@@ -136,7 +146,9 @@ export class ScreeningService {
             : []),
           ...(synthetic
             ? ["SYNTHETIC_FIXTURE_NOT_LIVE"]
-            : ["HISTORY_NOT_VERIFIED", "ADJUSTMENT_PROVENANCE_UNVERIFIED"]),
+            : trusted
+              ? ["SERVER_CONTEXT_DAILY_VERIFIED"]
+              : ["HISTORY_NOT_VERIFIED", "ADJUSTMENT_PROVENANCE_UNVERIFIED"]),
           ...(!row.instrument.rulesVerified
             ? ["INSTRUMENT_RULES_UNVERIFIED"]
             : []),
@@ -153,7 +165,13 @@ export class ScreeningService {
           status: row.manual ? "MANUAL" : result.status,
           screeningStatus: result.status as CandidateRow["screeningStatus"],
           manual: row.manual,
-          origin: row.manual ? "MANUAL" : synthetic ? "SYNTHETIC" : "IMPORTED",
+          origin: row.manual
+            ? "MANUAL"
+            : synthetic
+              ? "SYNTHETIC"
+              : trusted
+                ? "PROVIDER"
+                : "IMPORTED",
           tags: row.tags,
           note: row.note,
           dataCutoff: bars.at(-1)?.time ?? null,
@@ -171,7 +189,9 @@ export class ScreeningService {
               ? "MISSING"
               : synthetic
                 ? "SYNTHETIC"
-                : "UNKNOWN",
+                : trusted
+                  ? "VERIFIED"
+                  : "UNKNOWN",
             reasons: healthReasons,
             ignoredUnfinished,
             ignoredFuture,

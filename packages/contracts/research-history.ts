@@ -32,6 +32,15 @@ export interface ResearchChartData {
   ema50: (string | null)[];
   avwap: (string | null)[];
   synthetic: boolean;
+  /** Exact server-installed daily evidence; this chart response never grants live monitoring. */
+  providerContext?: {
+    id: string;
+    source: string;
+    probeReportId: string;
+    basisDate: string;
+    validUntil: number;
+    researchOnly: true;
+  } | null;
   researchHistory?: ResearchHistorySummary | null;
   /** Completion time in UTC seconds of the daily candle used per point; retrospective, never a receipt-time claim. */
   avwapCutoffs?: (number | null)[];

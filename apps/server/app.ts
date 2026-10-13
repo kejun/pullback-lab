@@ -1,5 +1,8 @@
 import { ClosedBarRuntime } from "./closed-bar-runtime.js";
-import type { ClosedBarAdapter } from "./closed-bar-adapter.js";
+import {
+  trustedClosedSupport,
+  type ClosedBarAdapter,
+} from "./closed-bar-adapter.js";
 import {
   registerResearchHistoryRoutes,
   readResearchHistory,
@@ -63,6 +66,8 @@ export interface AppOptions {
   marketStatus?: () => MarketWorkerStatus;
   /** Trusted server dependency only; never read from configuration JSON or a request. */
   closedBarAdapter?: ClosedBarAdapter;
+  /** Audited server factory shares this store for quota accounting. Never an HTTP/env input. */
+  closedBarAdapterFactory?: (store: Store) => ClosedBarAdapter;
 }
 export type PullbackApp = FastifyInstance & {
   store: Store;
@@ -235,10 +240,17 @@ export async function createApp(
   } else if (store.funds()) store.markRestored(now());
   const runtime = new AttemptRuntime(store, { now });
   app.decorate("runtime", runtime);
-  const monitor = new ClosedBarRuntime(store, {
-    now,
-    adapter: options.closedBarAdapter,
-  });
+  let adapter: ClosedBarAdapter | undefined;
+  try {
+    if (options.closedBarAdapter && options.closedBarAdapterFactory)
+      throw new Error("CLOSED_ADAPTER_CONFIGURATION_CONFLICT");
+    adapter =
+      options.closedBarAdapter ?? options.closedBarAdapterFactory?.(store);
+  } catch (error) {
+    store.close();
+    throw error;
+  }
+  const monitor = new ClosedBarRuntime(store, { now, adapter });
   app.decorate("monitor", monitor);
   await app.register(cookie);
   const auth = (request: FastifyRequest) => {
@@ -593,12 +605,23 @@ export async function createApp(
         ? latest?.anchorTime
         : z.coerce.number().int().nonnegative().parse(request.query.anchorTime);
     const anchor = daily.findIndex((bar) => bar.time === anchorTime);
+    const providerContext = trustedClosedSupport(
+      store.db,
+      store.instrument(request.params.id).instrument,
+      daily,
+      now(),
+    );
+    const adjustedDaily =
+      Boolean(providerContext) ||
+      (daily.length > 0 &&
+        daily.every((bar) => bar.id.startsWith("synthetic:")));
     const dailyAvwap =
-      anchor >= 0
+      anchor >= 0 && adjustedDaily
         ? avwap(
             daily.map((bar) => ({
               ...bar,
-              adjustmentVerified: bar.id.startsWith("synthetic:"),
+              adjustmentVerified:
+                bar.id.startsWith("synthetic:") || Boolean(providerContext),
             })),
             anchor,
           )
@@ -627,6 +650,16 @@ export async function createApp(
         50,
       ),
       avwap: projected,
+      providerContext: providerContext
+        ? {
+            id: providerContext.id,
+            source: providerContext.source,
+            probeReportId: providerContext.probeReportId,
+            basisDate: providerContext.basisDate,
+            validUntil: providerContext.capability.validUntil,
+            researchOnly: true,
+          }
+        : null,
       synthetic:
         bars.length > 0 && bars.every((bar) => bar.id.startsWith("synthetic:")),
     };
