@@ -341,11 +341,17 @@ test("hung plan refresh is bounded, releases controls, and cannot apply its late
   const hold = new Promise<void>((resolve) => {
     release = resolve;
   });
+  let settled!: () => void;
+  const routeSettled = new Promise<void>((resolve) => {
+    settled = resolve;
+  });
   await page.route("**/api/bootstrap", async (route) => {
     const response = await route.fetch();
     entered();
     await hold;
-    await route.fulfill({ response });
+    // The browser has aborted the request after our timeout; do not fulfill an already handled route.
+    if (!route.request().failure()) await route.fulfill({ response });
+    settled();
   });
   const refresh = panel(page).getByRole("button", {
     name: "读取最新监测状态",
@@ -353,13 +359,19 @@ test("hung plan refresh is bounded, releases controls, and cannot apply its late
   });
   await refresh.click();
   await intercepted;
+  const aborted = page.waitForEvent("requestfailed", {
+    predicate: (request) =>
+      new URL(request.url()).pathname === "/api/bootstrap",
+  });
   await page.clock.fastForward(15001);
+  expect((await aborted).failure()?.errorText).toBe("net::ERR_ABORTED");
   await expect(panel(page)).toContainText("状态未确认");
   await expect(refresh).toBeEnabled();
   await expect(
     panel(page).getByRole("button", { name: "暂停正式监测", exact: true }),
   ).toBeDisabled();
   release();
+  await routeSettled;
   await page.unroute("**/api/bootstrap");
   await refresh.click();
   await expect(panel(page)).not.toContainText("状态未确认");
