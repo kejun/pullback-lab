@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import type {
   DecisionEvent,
   FeedbackRevision,
@@ -69,6 +69,11 @@ export function DecisionEvidence({ event }: { event: DecisionEvent }) {
   const trigger = object(state.trigger);
   const risk = object(s.risk);
   const support = object(plan.supportSnapshot);
+  const chase = object(plan.chaseLimit);
+  const feeSchedule = object(plan.feeSchedule);
+  const hasSchedule = Object.keys(feeSchedule).length > 0;
+  const feeCurrency = feeSchedule.currency ?? object(plan.instrument).currency;
+  const funds = object(s.funds);
   const emitted = Array.isArray(s.emitted) ? s.emitted : [];
   const assessment = [...emitted]
     .reverse()
@@ -94,6 +99,16 @@ export function DecisionEvidence({ event }: { event: DecisionEvent }) {
         </dd>
         <dt>止损参考</dt>
         <dd>{value(plan.stop)}</dd>
+        <dt>冻结追价限制</dt>
+        <dd>
+          {chase.enabled === true
+            ? `启用 · 最大 ${value(chase.maxPercent)}%`
+            : chase.enabled === false
+              ? "关闭"
+              : Object.keys(plan).length
+                ? "未配置（默认关闭）"
+                : "未记录"}
+        </dd>
         <dt>首次回踩</dt>
         <dd>{at(state.touchAt)}</dd>
         <dt>突破阈值</dt>
@@ -130,6 +145,49 @@ export function DecisionEvidence({ event }: { event: DecisionEvent }) {
           {value(risk.cashUse)} / {value(risk.riskBase)}
         </dd>
       </dl>
+      <section aria-label="冻结费用依据">
+        <h4>冻结费用依据</h4>
+        <dl className="detail-list">
+          <dt>费用方式</dt>
+          <dd>{hasSchedule ? "完整费用规则" : "旧版固定费用"}</dd>
+          <dt>费用规则版本</dt>
+          <dd className="breakable">
+            {value(risk.feeVersion ?? feeSchedule.version)}
+          </dd>
+          <dt>生效日期 / 币种</dt>
+          <dd>
+            {value(feeSchedule.effectiveDate)} / {value(feeCurrency)}
+          </dd>
+          <dt>核算数量</dt>
+          <dd>{value(risk.quantity)} 股</dd>
+          <dt>核算买入费用</dt>
+          <dd>
+            {value(risk.buyFee)} {value(feeCurrency)}
+          </dd>
+          <dt>核算卖出费用</dt>
+          <dd>
+            {value(risk.sellFee)} {value(feeCurrency)}
+          </dd>
+          {(["buy", "sell"] as const).map((side) => {
+            const fee = object(feeSchedule[side]);
+            return (
+              <Fragment key={side}>
+                <dt>{side === "buy" ? "买入" : "卖出"}参数</dt>
+                <dd>
+                  {hasSchedule
+                    ? `最低 ${value(fee.minimum)}；固定 ${value(fee.fixed)}；每股 ${value(fee.perShare)}；成交额比例 ${value(fee.notionalRate)}`
+                    : `固定 ${value(side === "buy" ? funds.buyFee : funds.sellFee)}`}
+                </dd>
+              </Fragment>
+            );
+          })}
+        </dl>
+        <p className="field-explanation">
+          {hasSchedule
+            ? "每侧费用取最低费用与「固定费用 + 每股费用 × 股数 + 成交额比例 × 股数 × 核算价格」的较大值，再向上取整到小数点后两位。买入使用核算入场价，卖出使用考虑滑点的止损价。"
+            : "旧版记录保留原有固定费用；未记录的字段不会使用当前规则补算。"}
+        </p>
+      </section>
       {Object.keys(checks).length > 0 ? (
         <div className="gate-checks">
           {Object.entries(checks).map(([name, raw]) => {
