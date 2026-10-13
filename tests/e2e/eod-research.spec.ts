@@ -21,12 +21,52 @@ test("audited US and CN EOD captures reach research without a live adapter", asy
     path: testInfo.outputPath("eod-research-candidates-desktop.png"),
     fullPage: true,
   });
+  const researchDaily = await (
+    await page.request.get("/api/instruments/EOD-US/bars")
+  ).json();
+  const draftResponse = await page.request.post("/api/plans", {
+    headers: { "X-Requested-With": "PullbackLab" },
+    data: {
+      instrumentId: "EOD-US",
+      anchorTime: researchDaily.bars[10].time,
+      primarySupport: "101",
+      lower: "100.75",
+      upper: "101.25",
+      stop: "100.4",
+      entryMin: "101.61",
+      entryMax: "102.5",
+      mode: "CLOSE_CONFIRM",
+      sessionDate: "2026-10-12",
+      reason: "Isolated EOD research plan, not real market evidence",
+      backgroundConfirmed: true,
+      supportSelections: [{ source: "EMA9" }, { source: "AVWAP" }],
+    },
+  });
+  expect(draftResponse.status()).toBe(200);
+  const draft = await draftResponse.json();
+  expect(draft.status).toBe("DRAFT");
+  expect(draft.supportSnapshot.researchContextId).toMatch(/^eod-context:/);
+  expect(draft.supportSnapshot.providerContextId).toBeUndefined();
+  expect(draft.supportSnapshot.ready).toBe(false);
+  await page.reload();
   await page.getByRole("button", { name: "EOD.US", exact: true }).click();
   const chart = page.locator(".chart-panel");
   await expect(chart.getByLabel("日线来源依据")).toContainText(
     "正式监测仍须单独核验",
   );
   await expect(chart.locator("canvas").first()).toBeVisible();
+  const support = page.getByRole("region", { name: "支撑家族与证据" });
+  await expect(support).toContainText("已核验日线 · 研究专用");
+  await expect(support).toContainText("正式监测仍须单独核验");
+  const avwapLine = support
+    .locator(".support-line")
+    .filter({ hasText: "AVWAP" });
+  await expect(avwapLine).toContainText("100.5");
+  await expect(avwapLine).not.toContainText("数据不可用");
+  await expect(
+    page.getByText("已保存版本缺少完整支撑证据", { exact: false }),
+  ).toHaveCount(0);
+
   const daily = await (
     await page.request.get("/api/instruments/EOD-US/bars")
   ).json();

@@ -25,6 +25,7 @@ function decimalLabel(value: string | null): string {
     : value;
 }
 const reasonLabels: Record<string, string> = {
+  EOD_RESEARCH_ONLY: "日线研究资料已核验，仅供研究计划；正式监测仍须单独核验。",
   HISTORICAL_RESEARCH_ONLY:
     "人工历史重建资料仅供研究，非当时已知，不可启用正式提醒。",
   DAILY_HISTORY_INCOMPLETE: "已完成日线不足，或历史完整性尚未验证。",
@@ -87,7 +88,13 @@ export function SupportEditor({
       <div className="section-heading">
         <h4>支撑家族与证据</h4>
         <span className={`badge ${snapshot?.ready ? "green" : "amber"}`}>
-          {loading ? "核算中" : snapshot?.ready ? "支撑证据完整" : "待补充证据"}
+          {loading
+            ? "核算中"
+            : snapshot?.ready
+              ? "支撑证据完整"
+              : snapshot?.researchContextId
+                ? "已核验日线 · 研究专用"
+                : "待补充证据"}
         </span>
       </div>
       <p className="field-explanation">
