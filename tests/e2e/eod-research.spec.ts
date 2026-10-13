@@ -61,7 +61,14 @@ test("audited US and CN EOD captures reach research without a live adapter", asy
   const avwapLine = support
     .locator(".support-line")
     .filter({ hasText: "AVWAP" });
-  await expect(avwapLine).toContainText("100.5");
+  // This fixture's HLC3 is (102 + 99 + 101) / 3. AVWAP uses HLC3,
+  // not the endpoint's turnover/volume ratio.
+  await expect(avwapLine.locator("dd").first()).toHaveText("100.666666…");
+  await expect(avwapLine.locator("dd").first()).toHaveAttribute(
+    "title",
+    draft.supportSnapshot.lines.find((line: any) => line.source === "AVWAP")
+      .price,
+  );
   await expect(avwapLine).not.toContainText("数据不可用");
   await expect(
     page.getByText("已保存版本缺少完整支撑证据", { exact: false }),
