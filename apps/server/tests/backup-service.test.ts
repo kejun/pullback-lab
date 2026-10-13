@@ -90,7 +90,7 @@ describe("verified online backup", () => {
       .run();
     try {
       expect(await backupDatabase(source, target)).toEqual({
-        schemaVersion: 10,
+        schemaVersion: 11,
       });
     } finally {
       writer.exec("ROLLBACK");
@@ -149,7 +149,7 @@ describe("verified online backup", () => {
     expect(
       results.find((result) => result.status === "rejected"),
     ).toMatchObject({ reason: { code: "BACKUP_TARGET_EXISTS" } });
-    expect(schema(open(target))).toEqual({ version: 10 });
+    expect(schema(open(target))).toEqual({ version: 11 });
     noPartials(dir);
   });
 
@@ -263,7 +263,7 @@ describe("offline new-path restore", () => {
       rows: store.db.prepare(`SELECT * FROM ${table}`).all(),
     }));
     await expect(restoreDatabase(source, target)).resolves.toEqual({
-      schemaVersion: 10,
+      schemaVersion: 11,
     });
     const restored = current(target);
     expect(count(restored.db, "sessions")).toBe(0);
@@ -328,12 +328,12 @@ describe("offline new-path restore", () => {
     legacy.close();
     const original = readFileSync(source);
     await expect(restoreDatabase(source, target)).resolves.toEqual({
-      schemaVersion: 10,
+      schemaVersion: 11,
     });
     expect(readFileSync(source)).toEqual(original);
     expect(schema(open(source))).toEqual({ version: 1 });
     const restored = open(target);
-    expect(schema(restored)).toEqual({ version: 10 });
+    expect(schema(restored)).toEqual({ version: 11 });
     expect(restored.prepare("SELECT json FROM plan_versions").get()).toEqual({
       json: '{"kept":"exact"}',
     });
@@ -479,7 +479,7 @@ describe("period watermark migration", () => {
     const backup = await backupBeforeMigration(path, join(dir, "backups"));
     expect(backup?.schemaVersion).toBe(7);
     const store = current(path);
-    expect(schema(store.db)).toEqual({ version: 10 });
+    expect(schema(store.db)).toEqual({ version: 11 });
     const row = store.db
       .prepare("SELECT * FROM market_worker_watermarks")
       .get() as { instrument_id: string; period: string; json: string };
@@ -517,7 +517,7 @@ describe("provider receipt query migration", () => {
         .all(),
     ).toEqual(original);
     const store = current(path);
-    expect(schema(store.db)).toEqual({ version: 10 });
+    expect(schema(store.db)).toEqual({ version: 11 });
     expect(
       store.db
         .prepare("SELECT * FROM market_provider_receipts ORDER BY sequence")
@@ -599,7 +599,7 @@ describe("manual research history migration", () => {
         .get(),
     ).toBeUndefined();
     const store = current(path);
-    expect(schema(store.db)).toEqual({ version: 10 });
+    expect(schema(store.db)).toEqual({ version: 11 });
     expect(store.setting("private-marker")).toBe("preserved-v9");
     expect(
       store.db.prepare("SELECT count(*) n FROM research_history").get(),
@@ -678,5 +678,29 @@ describe("manual research history migration", () => {
     expect(() => restored.db.exec("DELETE FROM research_history")).toThrow(
       "IMMUTABLE_RESEARCH_HISTORY",
     );
+  });
+});
+
+describe("formal closed-bar migration", () => {
+  it("backs up v10 before installing the formal runtime without modifying research bytes", async () => {
+    const dir = directory(),
+      path = join(dir, "v10.sqlite");
+    const db = old(path, 10);
+    db.prepare("INSERT INTO settings VALUES(?,?)").run(
+      "v10-marker",
+      "exact existing bytes",
+    );
+    db.close();
+    const backup = await backupBeforeMigration(path, join(dir, "backups"));
+    expect(backup?.schemaVersion).toBe(10);
+    const upgraded = current(path);
+    expect(schema(upgraded.db)).toEqual({ version: 11 });
+    expect(upgraded.setting("v10-marker")).toBe("exact existing bytes");
+    expect(
+      upgraded.db.prepare("SELECT COUNT(*) n FROM closed_receipts").get(),
+    ).toEqual({ n: 0 });
+    expect(
+      upgraded.db.prepare("SELECT COUNT(*) n FROM research_history").get(),
+    ).toEqual({ n: 0 });
   });
 });

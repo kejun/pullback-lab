@@ -75,6 +75,8 @@ try {
   });
   // No provider request starts until HTTP startup succeeds.
   worker.start();
+  await app.monitor.start();
+  app.monitor.startScheduler();
   app.runtime.startScheduler();
   for (const signal of ["SIGTERM", "SIGINT"] as const)
     process.once(signal, () => {

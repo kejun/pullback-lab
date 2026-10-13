@@ -30,6 +30,9 @@ export interface TriggerBar extends CandidateWindow {
   receivedAt: number;
 }
 export interface AttemptConfig {
+  /** Formal runtime opt-in; absent keeps archived v1 cancellation semantics unchanged. */
+  allowPausedCancellation?: boolean;
+  allowFeedbackCorrections?: boolean;
   attemptId: string;
   planId: string;
   planVersion: number;
@@ -55,6 +58,10 @@ export interface AttemptConfig {
   priceBands?: { from: string; tick: string }[];
 }
 export interface DecisionGates {
+  /** Actual server decision time; receipt time remains the close eligibility boundary. */
+  decisionAt?: number;
+  /** A stop quote known before decision remains invalidating after a later rebound. */
+  knownStop?: { price: string; at: number; receivedAt: number };
   capability:
     "LIVE_CLOSED_BAR" | "LIVE_TICK" | "DELAYED" | "EOD_ONLY" | "UNKNOWN";
   dataHealthy: boolean;
@@ -397,7 +404,11 @@ export function reduceAttempt(
     return { state, events };
   }
   if (input.type === "PAUSE") {
-    if (!state.consumed && active(state)) {
+    if (
+      !state.consumed &&
+      (active(state) ||
+        (c.allowPausedCancellation === true && state.status === "DATA_PAUSED"))
+    ) {
       state.status = "USER_PAUSED";
       state.reason = "USER_PAUSED";
       emit("USER_PAUSED", input.receivedAt);
@@ -407,7 +418,9 @@ export function reduceAttempt(
   if (input.type === "FEEDBACK") {
     if (
       state.eventKeys.includes(`${c.attemptId}:ENTRY_TRIGGERED`) &&
-      !["TAKEN", "SKIPPED"].includes(state.status)
+      (!["TAKEN", "SKIPPED"].includes(state.status) ||
+        (c.allowFeedbackCorrections === true &&
+          state.status !== input.feedback))
     ) {
       state.status = input.feedback;
       emit(input.feedback, input.receivedAt);
@@ -534,12 +547,15 @@ export function reduceAttempt(
       checks[name] = { status, reasons };
     };
     const q = gates?.quote;
+    const decisionAt = gates?.decisionAt ?? input.receivedAt;
     const quoteGood =
+      Number.isSafeInteger(decisionAt) &&
+      decisionAt >= input.receivedAt &&
       !!q &&
       Number.isSafeInteger(q.at) &&
       validPrice(q.price) &&
-      q.at <= input.receivedAt &&
-      input.receivedAt - q.at <= (c.quoteMaxAgeMs ?? 3_000);
+      q.at <= decisionAt &&
+      decisionAt - q.at <= (c.quoteMaxAgeMs ?? 3_000);
     const echeck = q && validPrice(q.price) ? q.price : price;
     check(
       "quote",
@@ -577,7 +593,7 @@ export function reduceAttempt(
         lod.complete &&
         lod.from === c.sessionOpenAt &&
         lod.through >= Math.max(q?.at ?? time, time) &&
-        lod.through <= input.receivedAt &&
+        lod.through <= decisionAt &&
         validPrice(lod.price);
       if (!lodGood) check("chase", "UNAVAILABLE", ["SESSION_LOW_INCOMPLETE"]);
       else {
@@ -667,13 +683,21 @@ export function reduceAttempt(
     }
     // Stop evidence takes precedence, including a later tick received before a queued close.
     const currentQuote = input.gates?.quote;
+    const decisionAt = input.gates?.decisionAt ?? input.receivedAt;
+    const knownStop = input.gates?.knownStop;
     if (
       active(state) &&
       (dec(b.low).lte(c.stop) ||
         (currentQuote &&
           validPrice(currentQuote.price) &&
-          currentQuote.at <= input.receivedAt &&
-          dec(currentQuote.price).lte(c.stop)))
+          currentQuote.at <= decisionAt &&
+          dec(currentQuote.price).lte(c.stop)) ||
+        (knownStop &&
+          validPrice(knownStop.price) &&
+          knownStop.at >= c.activatedAt &&
+          knownStop.at <= knownStop.receivedAt &&
+          knownStop.receivedAt <= decisionAt &&
+          dec(knownStop.price).lte(c.stop)))
     ) {
       invalidate("STOP_REFERENCE_TOUCHED", b.end);
       return { state, events };

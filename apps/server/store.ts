@@ -1,3 +1,5 @@
+import { calculateClosedRisk, type ClosedRiskInput } from "./closed-risk.js";
+import { trustedClosedSupport } from "./closed-bar-adapter.js";
 import {
   researchHistoryBars,
   readResearchHistory,
@@ -248,6 +250,14 @@ export class Store {
   bars(id: string, period: string, historyId?: string): Bar[] {
     const historical = researchHistoryBars(this.db, id, period, historyId);
     if (historical !== null) return historical;
+    if (period === "1D") {
+      const trusted = this.db
+        .prepare(
+          "SELECT c.json FROM closed_sources s JOIN closed_contexts c ON c.id=s.context_id WHERE s.instrument_id=?",
+        )
+        .get(id) as { json: string } | undefined;
+      if (trusted) return JSON.parse(trusted.json).daily as Bar[];
+    }
     return (
       this.db
         .prepare(
@@ -295,8 +305,8 @@ export class Store {
           input.researchHistoryId,
         )
       : null;
-    // Only the server-installed synthetic fixture has a verified history today.
-    // Real feed metadata is kept in quarantine until independent validation exists.
+    // Historical uploads never grant readiness. Only installed server evidence or an
+    // explicitly synthetic fixture can supply complete support history.
     const synthetic =
       instrument.id.startsWith("DEMO-") &&
       bars.length > 0 &&
@@ -305,13 +315,16 @@ export class Store {
           bar.id.startsWith("synthetic:") &&
           (bar as Bar & { synthetic?: boolean }).synthetic === true,
       );
+    const trusted =
+      !research &&
+      trustedClosedSupport(this.db, instrument, bars, now, sessionDate);
     const result = freezeSupport(
       { ...input, supportSelections: input.supportSelections ?? [] },
       instrument,
       {
         bars,
-        historyComplete: synthetic,
-        adjustmentVerified: synthetic || research !== null,
+        historyComplete: synthetic || Boolean(trusted),
+        adjustmentVerified: synthetic || research !== null || Boolean(trusted),
         synthetic,
         dataRevision: this.revision(bars),
         instrumentRevision: this.revision(instrument),
@@ -319,6 +332,7 @@ export class Store {
       now,
       reason,
     );
+    if (trusted) result.providerContextId = trusted.id;
     if (research) {
       result.ready = false;
       result.status = "INCOMPLETE";
@@ -362,6 +376,12 @@ export class Store {
     );
     if (this.revision(daily) !== frozen.dataRevision)
       reasons.push("PLAN_DATA_REVISION_CHANGED");
+    if (
+      frozen.providerContextId &&
+      trustedClosedSupport(this.db, instrument, daily, now, plan.sessionDate)
+        ?.id !== frozen.providerContextId
+    )
+      reasons.push("PROVIDER_CONTEXT_REVISION_CHANGED");
     return reasons;
   }
   invalidateEvidence(
@@ -675,6 +695,33 @@ export class Store {
       phase: "TRIGGER",
       reservations: this.totals(plan),
     });
+  }
+  closedRiskInput(
+    plan: Plan,
+    now: number,
+    quote: { price: string; at: number } | undefined,
+    sessionOpenAt: number,
+  ): ClosedRiskInput {
+    return {
+      plan,
+      instrument: this.instrument(plan.instrumentId).instrument,
+      funds: this.funds(),
+      reservations: this.reservations(),
+      quote,
+      sessionOpenAt,
+      decisionAt: now,
+    };
+  }
+  /** Never maps funds or FX timestamps onto another clock. Caller owns the transaction. */
+  closedRisk(
+    plan: Plan,
+    now: number,
+    quote: { price: string; at: number } | undefined,
+    sessionOpenAt: number,
+  ): RiskResult {
+    return calculateClosedRisk(
+      this.closedRiskInput(plan, now, quote, sessionOpenAt),
+    );
   }
   activate(
     id: string,
@@ -1109,6 +1156,105 @@ export class Store {
       }
       return [technical, final];
     });
+  }
+  /** Formal runtime only. It must already hold BEGIN IMMEDIATE across receipt, reduction and this commit. */
+  commitClosedTransition(
+    id: string,
+    expectedVersion: number,
+    attemptId: string,
+    state: AttemptState,
+    events: TriggerEvent[],
+    snapshot: Record<string, unknown>,
+    risk: RiskResult | null,
+    now: number,
+  ): void {
+    if (!this.db.inTransaction) throw new Error("CLOSED_TRANSACTION_REQUIRED");
+    const p = this.plan(id);
+    this.assertVersion(p, expectedVersion);
+    const checkpoint = this.db
+      .prepare(
+        "SELECT context_id FROM closed_attempts WHERE attempt_id=? AND plan_id=? AND plan_version=?",
+      )
+      .get(attemptId, id, expectedVersion) as
+      { context_id: string } | undefined;
+    const attempt = this.db
+      .prepare("SELECT consumed,json FROM attempts WHERE id=?")
+      .get(attemptId) as { consumed: number; json: string } | undefined;
+    if (
+      !checkpoint ||
+      !attempt ||
+      p.attemptId !== attemptId ||
+      state.attemptId !== attemptId ||
+      state.planVersion !== expectedVersion ||
+      snapshot.runtimeVersion !== "closed-bar-v1" ||
+      snapshot.contextId !== checkpoint.context_id ||
+      JSON.parse(attempt.json).kind !== "LIVE_CLOSED_BAR"
+    )
+      throw new ApiError(
+        409,
+        "CLOSED_ATTEMPT_CONFLICT",
+        "正式观察依据或尝试已改变",
+      );
+    if (!attempt.consumed && state.consumed)
+      this.db
+        .prepare("UPDATE attempts SET consumed=1 WHERE id=?")
+        .run(attemptId);
+    const entry = events.find((e) => e.type === "ENTRY_TRIGGERED");
+    if (entry) {
+      const reservation = this.reservations().find(
+        (r) =>
+          r.planId === id && r.attemptId === attemptId && r.state === "ACTIVE",
+      );
+      if (
+        attempt.consumed ||
+        !risk?.passed ||
+        entry.historical ||
+        entry.quantity !== risk.quantity ||
+        !reservation ||
+        reservation.generation !== this.funds()?.generation ||
+        risk.quantity > reservation.quantity
+      )
+        throw new ApiError(409, "CLOSED_RISK_CONFLICT", "入场与资金复核不一致");
+      this.writeReservation({
+        ...reservation,
+        quantity: risk.quantity,
+        cash: risk.cashUse,
+        riskBase: risk.riskBase,
+        exposureBase: risk.exposureBase,
+      });
+    }
+    if (!attempt.consumed) {
+      if (["INVALID", "EXPIRED", "USER_PAUSED"].includes(state.status))
+        this.release(id);
+      this.writePlan({ ...p, status: state.status, updatedAt: now });
+    }
+    for (const event of events) {
+      if (
+        attempt.consumed &&
+        !["BREAKOUT_FADED", "STOP_REFERENCE_TOUCHED", "DATA_PAUSED"].includes(
+          event.type,
+        )
+      )
+        continue;
+      this.insertEvent(
+        p,
+        event.type,
+        event.key,
+        event.time,
+        event.receivedAt,
+        event.type === "ENTRY_TRIGGERED"
+          ? "收盘确认通过当前成交价估计与资金检查；价格不保证可成交，请人工核对"
+          : event.type === "TECHNICAL_TRIGGERED"
+            ? "首次合格技术突破；本次尝试已消费"
+            : event.type === "HISTORICAL_TRIGGERED"
+              ? "迟到的历史技术参考，不是当前入场提醒"
+              : `收盘观察：${event.type}`,
+        event.reasons,
+        event.quantity ?? null,
+        event.historical,
+        snapshot,
+      );
+    }
   }
   /** Persist only trusted synthetic runner results; real capability remains closed. */
   commitRuntimeTransition(
