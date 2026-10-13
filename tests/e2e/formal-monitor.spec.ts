@@ -314,6 +314,24 @@ test("hung plan refresh is bounded, releases controls, and cannot apply its late
   page,
 }) => {
   await login(page);
+  // Keep this timeout regression independently runnable in a fresh fixture service.
+  const current = await saved(page);
+  if (!current.attemptId) {
+    const activated = await page.request.post(
+      `/api/plans/${current.id}/activate`,
+      {
+        headers,
+        data: { expectedVersion: current.version, expectedAttemptId: null },
+      },
+    );
+    expect(activated.status()).toBe(200);
+    await panel(page)
+      .getByRole("button", { name: "读取最新监测状态", exact: true })
+      .click();
+  }
+  await expect(
+    panel(page).getByRole("button", { name: "暂停正式监测", exact: true }),
+  ).toBeEnabled();
   await page.clock.install();
   let entered!: () => void;
   const intercepted = new Promise<void>((resolve) => {
