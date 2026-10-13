@@ -36,8 +36,8 @@ export function formalMonitorControls(
           : null;
   const evidenceReason = plan.researchHistoryId
     ? "人工历史资料仅供研究，不能启用正式提醒。"
-    : plan.mode !== "CLOSE_CONFIRM"
-      ? "正式监测目前只支持收盘确认；盘中逐笔模式未开放。"
+    : plan.mode === "INTRABAR_CROSS" && !instrument?.tickEligible
+      ? `盘中逐笔模式未开放：连续性、包级序号、包内顺序或部署证据尚未通过核验（${instrument?.tickReason ?? "TICK_PROTOCOL_EVIDENCE_UNVERIFIED"}）。`
       : !plan.backgroundConfirmed || !plan.reason.trim()
         ? "请确认研究背景并保存计划。"
         : !plan.supportSnapshot?.ready ||

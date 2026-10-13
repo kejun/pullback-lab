@@ -778,8 +778,16 @@ export function reduceAttempt(
     if (state.trigger && x.at >= state.trigger.time) postTrigger(x.price, x.at);
     return { state, events };
   }
-  if (active(state) && dec(x.price).lte(c.stop)) {
-    invalidate("STOP_REFERENCE_TOUCHED", x.at);
+  const knownStop = input.gates?.knownStop;
+  const knownStopValid =
+    knownStop &&
+    validPrice(knownStop.price) &&
+    knownStop.at >= c.activatedAt &&
+    knownStop.at <= knownStop.receivedAt &&
+    knownStop.receivedAt <= (input.gates?.decisionAt ?? input.receivedAt) &&
+    dec(knownStop.price).lte(c.stop);
+  if (active(state) && (dec(x.price).lte(c.stop) || knownStopValid)) {
+    invalidate("STOP_REFERENCE_TOUCHED", knownStopValid ? knownStop.at : x.at);
     return { state, events };
   }
   if (c.mode !== "INTRABAR_CROSS" || !active(state)) return { state, events };

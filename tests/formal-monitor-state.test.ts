@@ -25,7 +25,15 @@ const snapshot: MonitorSnapshot = {
     connected: true,
     liveEligible: true,
     reason: "SERVER_ADAPTER_CONNECTED",
-    instruments: [{ instrumentId: "US-A", liveEligible: true, reason: null }],
+    instruments: [
+      {
+        instrumentId: "US-A",
+        liveEligible: true,
+        tickEligible: false,
+        tickReason: "TICK_CAPABILITY_UNVERIFIED",
+        reason: null,
+      },
+    ],
   },
   progress: null,
 };
@@ -37,6 +45,7 @@ const progress: NonNullable<MonitorSnapshot["progress"]> = {
   status: "DATA_PAUSED",
   reason: "MISSING_MINUTE",
   template: "SESSION_FIRST",
+  mode: "CLOSE_CONFIRM",
   sourceAttemptId: null,
   activatedAt: 1,
   watermark: 123,
@@ -185,4 +194,18 @@ it("allows a new session-first plan but never reuses a same-session attempt", ()
     canRecover: false,
     sessionUnknown: true,
   });
+});
+
+it("requires exact instrument tick eligibility for an explicit intrabar plan", () => {
+  const eligible = structuredClone(snapshot);
+  eligible.availability.instruments[0].tickEligible = true;
+  eligible.availability.instruments[0].tickReason = null;
+  expect(
+    formalMonitorControls({ ...plan, mode: "INTRABAR_CROSS" }, eligible)
+      .canActivate,
+  ).toBe(true);
+  eligible.availability.instruments[0].tickEligible = false;
+  expect(
+    formalMonitorControls({ ...plan, mode: "INTRABAR_CROSS" }, eligible).reason,
+  ).toContain("盘中逐笔模式未开放");
 });

@@ -55,6 +55,12 @@ export function FormalMonitor({
   onChanged: (signal?: AbortSignal) => Promise<void>;
   onBusyChange: (value: boolean) => void;
 }) {
+  const title =
+    plan.mode === "INTRABAR_CROSS" ? "正式盘中监测" : "正式收盘监测";
+  const actionLabel = (kind: MonitorCommand) =>
+    kind === "activate" && plan.mode === "INTRABAR_CROSS"
+      ? "启用正式盘中监测"
+      : actionLabels[kind];
   const [snapshot, setSnapshot] = useState<MonitorSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
@@ -198,11 +204,11 @@ export function FormalMonitor({
   return (
     <section
       className="formal-monitor"
-      aria-label="正式收盘监测"
+      aria-label={title}
       aria-busy={loading || pending}
     >
       <div className="section-heading">
-        <h3>正式收盘监测</h3>
+        <h3>{title}</h3>
         <button
           type="button"
           className="text-button"
@@ -215,7 +221,9 @@ export function FormalMonitor({
           读取最新监测状态
         </button>
       </div>
-      <p>只接收服务器核验的闭合行情。此入口不连接交易账户，也不会下单。</p>
+      <p>
+        只接收服务器核验的行情与连续性证据。此入口不连接交易账户，也不会下单。
+      </p>
       {error && (
         <p className="support-warning" role="alert">
           {error}
@@ -266,9 +274,11 @@ export function FormalMonitor({
         </dd>
         <dt>本标的能力</dt>
         <dd>
-          {instrument?.liveEligible
-            ? "服务器已核验正式收盘资格"
-            : "未授权或尚未核验，不可行动"}
+          {instrument?.tickEligible
+            ? "服务器已核验连续逐笔协议与收盘资格"
+            : instrument?.liveEligible
+              ? "服务器已核验正式收盘资格"
+              : "未授权或尚未核验，不可行动"}
         </dd>
         <dt>实际运行模式</dt>
         <dd>
@@ -279,10 +289,25 @@ export function FormalMonitor({
           controls.sameSession &&
           !needsRefresh &&
           !controls.capabilityReason
-            ? "收盘确认"
+            ? progress.mode === "INTRABAR_CROSS"
+              ? "盘中穿越"
+              : "收盘确认"
             : "未运行正式监测"}
-          ；盘中逐笔未开放
+          {!instrument?.tickEligible && "；盘中逐笔未开放"}
         </dd>
+        <dt>模式差异</dt>
+        <dd>
+          收盘确认等待最终 K
+          线；盘中穿越需要参考就绪后的连续两笔成交，可能触发后回落，原始记录会保留。
+        </dd>
+        {plan.mode === "INTRABAR_CROSS" && !instrument?.tickEligible && (
+          <>
+            <dt>盘中未开放原因</dt>
+            <dd>
+              {instrument?.tickReason ?? "连续逐笔协议与实际部署证据尚未核验"}
+            </dd>
+          </>
+        )}
         <dt>当前计划版本</dt>
         <dd>
           v{plan.version} · {labels[plan.status] ?? plan.status}
@@ -351,7 +376,7 @@ export function FormalMonitor({
             disabled={blocked || !controls.canActivate}
             onClick={() => setConfirmation("activate")}
           >
-            {actionLabels.activate}
+            {actionLabel("activate")}
           </button>
         )}
         {((progress && !controls.historicalOnly) || plan.attemptId) && (
@@ -381,7 +406,7 @@ export function FormalMonitor({
           role="group"
           aria-label="确认正式监测操作"
         >
-          <h4>{actionLabels[confirmation]}</h4>
+          <h4>{actionLabel(confirmation)}</h4>
           <p>
             将操作已保存版本 v{plan.version}，
             {plan.attemptId ? `当前尝试 ${plan.attemptId}` : "当前尚无尝试"}。
@@ -391,7 +416,9 @@ export function FormalMonitor({
               ? `来源为 v${progress?.planVersion}，已处理水位 ${time(progress?.watermark)}。旧机会不会追发；恢复不代表会话首次，必须重新高于支撑区上沿后再回踩。`
               : confirmation === "pause"
                 ? "暂停后不会自动重启；需要核对水位并显式新建恢复尝试。"
-                : "仅启用收盘确认。开盘后缺少此前未触碰的完整证据会被拒绝，不会补发过去机会。"}
+                : plan.mode === "INTRABAR_CROSS"
+                  ? "按你的选择启用盘中穿越，必须有连续逐笔证据。盘中触发可能在收盘前回落；只保留真实发生的判断，不追发旧机会。"
+                  : "仅启用收盘确认。开盘后缺少此前未触碰的完整证据会被拒绝，不会补发过去机会。"}
           </p>
           <div className="monitor-actions">
             <button

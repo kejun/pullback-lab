@@ -2471,9 +2471,7 @@ export default function App() {
                                 value="INTRABAR_CROSS"
                                 disabled={
                                   !boot.demo &&
-                                  boot.capabilities.find(
-                                    (c) => c.market === instrument.market,
-                                  )?.level !== "LIVE_TICK"
+                                  !boot.intrabarEligibleInstrumentIds?.includes(instrument.id)
                                 }
                               >
                                 盘中穿越 · 需要连续实时逐笔

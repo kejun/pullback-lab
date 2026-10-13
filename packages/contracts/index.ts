@@ -325,6 +325,8 @@ export interface EventPage extends EventFeedBatch {
 export interface Bootstrap {
   demo: boolean;
   capabilities: Capability[];
+  /** Per-instrument server validation; market-level capability is insufficient. */
+  intrabarEligibleInstrumentIds?: string[];
   instruments: Instrument[];
   plans: Plan[];
   funds: Funds | null;

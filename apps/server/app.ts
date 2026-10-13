@@ -385,6 +385,10 @@ export async function createApp(
       return {
         demo,
         capabilities: getUnknownCapabilities(),
+        intrabarEligibleInstrumentIds: monitor
+          .availability()
+          .instruments.filter((i) => i.tickEligible)
+          .map((i) => i.instrumentId),
         instruments: store.listInstruments().map((x) => x.instrument),
         universeRevision: universeRevision(store),
         plans: store.plans(),
