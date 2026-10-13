@@ -1,3 +1,10 @@
+import {
+  createCnMinuteSourcesCapture,
+  diagnoseCnMinuteSources,
+  summarizeCnMinuteSources,
+  type CnMinuteSourcesCapture,
+  type CnMinuteSourcesDiagnostic,
+} from "./cn-minute-sources.js";
 import type { Market } from "../contracts/index.js";
 import type {
   LongbridgeReadOnlyAdapter,
@@ -25,11 +32,21 @@ type ProbeAdapter = Pick<
   | "calendarEvidence"
   | "observeConfirmed"
 > &
-  Partial<Pick<LongbridgeReadOnlyAdapter, "source" | "fetchDailyHistoryPage">>;
+  Partial<
+    Pick<
+      LongbridgeReadOnlyAdapter,
+      | "source"
+      | "fetchDailyHistoryPage"
+      | "fetchMinuteSeed"
+      | "observeTradeSources"
+    >
+  >;
 export interface ProbeOptions {
   symbols: string[];
   /** Explicit bounded RAW daily collection; full receipts stay in the private journal. */
   historyWindow?: HistoryWindow;
+  /** Separate CN seed/trade sources for private diagnostics; never live capability. */
+  minuteSources?: boolean;
   observeSeconds: number;
   env: NodeJS.ProcessEnv;
   runtime: string;
@@ -75,6 +92,8 @@ export interface ProbeReport {
   missingEnvironmentNames: string[];
   steps: ProbeStep[];
   historyCaptures?: LongbridgeHistoryCapture[];
+  minuteSourceCapture?: CnMinuteSourcesCapture;
+  minuteSourceDiagnostic?: CnMinuteSourcesDiagnostic;
 }
 const credentials = [
   "LONGBRIDGE_APP_KEY",
@@ -167,6 +186,10 @@ export async function runMarketProbe(
   };
   const checkpoint = () => options.checkpoint?.(structuredClone(report));
   const finish = (exitCode: 1 | 2) => {
+    if (report.minuteSourceCapture?.status === "COLLECTING") {
+      report.minuteSourceCapture.status = "INCOMPLETE";
+      report.minuteSourceCapture.completedAt = now();
+    }
     report.completedAt = new Date(now()).toISOString();
     checkpoint();
     return { report, exitCode };
@@ -204,7 +227,20 @@ export async function runMarketProbe(
     if (options.sdk !== "5.2.0")
       report.blockedBy.push("历史采集仅支持锁定SDK5.2.0。");
   }
+  if (
+    options.minuteSources &&
+    (options.historyWindow ||
+      options.sdk !== "5.2.0" ||
+      observeSeconds < 1 ||
+      !options.checkpoint ||
+      symbols.some((s) => !/^\d{6}\.(SH|SZ)$/.test(s)))
+  )
+    report.blockedBy.push(
+      "分钟来源诊断须独立运行：锁定SDK、1至2个CN代码、1至120秒和私有检查点；不与日线窗口混用。",
+    );
   if (report.blockedBy.length > caveats.length) return finish(2);
+  if (options.minuteSources)
+    report.minuteSourceCapture = createCnMinuteSourcesCapture(now());
   if (options.historyWindow) report.historyCaptures = [];
   report.status = "COLLECTING";
   checkpoint();
@@ -295,7 +331,16 @@ export async function runMarketProbe(
     await step(
       `instrument:${symbol}`,
       () => adapter.instrumentEvidence([symbol]),
-      (x) => x,
+      (x) => {
+        if (report.minuteSourceCapture)
+          report.minuteSourceCapture.instruments.push(
+            ...x.map((i) => ({
+              symbol: i.symbol,
+              securityBoard: i.securityBoard ?? null,
+            })),
+          );
+        return x;
+      },
       (x) => x.length === 0,
       scope,
     );
@@ -379,11 +424,41 @@ export async function runMarketProbe(
       capture.completedAt = now();
       checkpoint();
     } else {
-      for (const period of ["1D", "1m", "5m"] as const)
+      for (const period of (options.minuteSources
+        ? ["1m", "5m"]
+        : ["1D", "1m", "5m"]) as Array<"1D" | "1m" | "5m">)
         await step(
           `bars:${symbol}:${period}`,
-          () => adapter.fetchBars(symbol, period, period === "1D" ? 300 : 60),
-          barEvidence,
+          () => {
+            if (options.minuteSources) {
+              if (
+                !adapter.fetchMinuteSeed ||
+                adapter.source !== LONGBRIDGE_HISTORY_SOURCE ||
+                period === "1D"
+              )
+                throw new Error("MINUTE_SOURCE_ADAPTER_UNSUPPORTED");
+              return adapter.fetchMinuteSeed(symbol, period, 60);
+            }
+            return adapter.fetchBars(
+              symbol,
+              period,
+              period === "1D" ? 300 : 60,
+            );
+          },
+          (samples) => {
+            if (report.minuteSourceCapture && period !== "1D") {
+              if (samples.length > 60)
+                throw new Error("MINUTE_SEED_SAMPLE_LIMIT");
+              report.minuteSourceCapture.seeds.push({
+                symbol,
+                period,
+                endpoint: "candlesticks",
+                receivedAt: now(),
+                samples: structuredClone(samples),
+              });
+            }
+            return barEvidence(samples);
+          },
           (x) => x.length === 0,
           scope,
         );
@@ -405,7 +480,63 @@ export async function runMarketProbe(
         { market },
       );
   }
-  if (observeSeconds > 0)
+  if (options.minuteSources) {
+    const observation = await step(
+      "minute-source-observation",
+      async () => {
+        if (
+          !adapter.observeTradeSources ||
+          adapter.source !== LONGBRIDGE_HISTORY_SOURCE
+        )
+          throw new Error("MINUTE_SOURCE_ADAPTER_UNSUPPORTED");
+        return adapter.observeTradeSources(
+          symbols,
+          observeSeconds * 1000,
+          timeout,
+        );
+      },
+      (value) => {
+        report.minuteSourceCapture!.tradePackets = structuredClone(
+          value.packets,
+        );
+        return {
+          events: value.packets.length,
+          trades: value.packets.reduce((n, p) => n + p.trades.length, 0),
+          observationStatus: value.status,
+          cleanup: value.cleanup,
+          ...(value.failure ? { failure: value.failure } : {}),
+        };
+      },
+      (value) => !value.packets.some((packet) => packet.trades.length),
+      {},
+      observeSeconds * 1000 + 2 * timeout + 1000,
+    );
+    if (observation?.status === "INCOMPLETE") {
+      failed = true;
+      const last = report.steps.at(-1)!;
+      last.status = "FAILED";
+      last.reason = observation.failure ?? "QUOTE_PROBE_STEP_FAILED";
+    }
+    const capture = report.minuteSourceCapture!;
+    capture.completedAt = now();
+    capture.status =
+      failed || !observation || capture.seeds.length !== symbols.length * 2
+        ? "INCOMPLETE"
+        : "SAMPLED";
+    try {
+      report.minuteSourceDiagnostic = diagnoseCnMinuteSources(capture);
+      report.steps.at(-1)!.evidence = {
+        ...(report.steps.at(-1)!.evidence as object),
+        diagnostics: summarizeCnMinuteSources(report.minuteSourceDiagnostic),
+      };
+    } catch {
+      failed = true;
+      capture.status = "INCOMPLETE";
+      report.steps.at(-1)!.status = "FAILED";
+      report.steps.at(-1)!.reason = "MINUTE_SOURCE_CAPTURE_INVALID";
+    }
+    checkpoint();
+  } else if (observeSeconds > 0)
     await step(
       "confirmed-observation",
       () => adapter.observeConfirmed(symbols, observeSeconds * 1000, timeout),

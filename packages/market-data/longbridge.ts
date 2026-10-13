@@ -11,6 +11,10 @@ import {
 } from "longbridge";
 import type { Capability, Market } from "../contracts/index.js";
 import { withDeadline, OperationTimeout } from "./deadline.js";
+import {
+  observeRawTradeSources,
+  type TradeSourceObservation,
+} from "./longbridge-trade-observer.js";
 import { getUnknownCapabilities } from "./capabilities.js";
 import {
   dailyHistoryWindows,
@@ -143,6 +147,32 @@ export class LongbridgeReadOnlyAdapter implements MarketDataAdapter {
     this.cache.set(key, { at: receivedAt, bars });
     return structuredClone(bars);
   }
+  /** Fresh remote request, not subscribeCandlesticks' possibly mixed in-memory tail. */
+  async fetchMinuteSeed(
+    symbol: string,
+    period: "1m" | "5m",
+    count = 60,
+  ): Promise<ProviderBarSample[]> {
+    validateSymbol(symbol);
+    if (
+      !/^\d{6}\.(SH|SZ)$/.test(symbol) ||
+      !["1m", "5m"].includes(period) ||
+      !Number.isSafeInteger(count) ||
+      count < 1 ||
+      count > 60
+    )
+      throw new Error("MINUTE_SEED_BOUNDS_INVALID");
+    const raw = await this.ctx.candlesticks(
+      symbol,
+      periods[period],
+      count,
+      AdjustType.NoAdjust,
+      TradeSessions.Intraday,
+    );
+    if (raw.length > count) throw new Error("MINUTE_SEED_SAMPLE_LIMIT");
+    const receivedAt = this.clock();
+    return raw.map((bar) => sample(symbol, period, bar, receivedAt));
+  }
   /** One bounded RAW endpoint page. Timestamp labels, units and finality remain unverified. */
   async fetchDailyHistoryPage(
     symbol: string,
@@ -235,6 +265,7 @@ export class LongbridgeReadOnlyAdapter implements MarketDataAdapter {
       currency: string;
       lotSize: number;
       rulesVerified: false;
+      securityBoard?: number | null;
     }>
   > {
     symbols.forEach(validateSymbol);
@@ -245,6 +276,7 @@ export class LongbridgeReadOnlyAdapter implements MarketDataAdapter {
       currency: x.currency,
       lotSize: x.lotSize,
       rulesVerified: false,
+      securityBoard: Number.isSafeInteger(x.board) ? x.board : null,
     }));
   }
   async calendarEvidence(
@@ -266,6 +298,36 @@ export class LongbridgeReadOnlyAdapter implements MarketDataAdapter {
       halfDays: days.halfTradingDays.map((x) => x.toString()),
       sessionHoursVerified: false,
     };
+  }
+  /** Separate raw endpoints: never expose SDK-mixed candle volume as homogeneous shares. */
+  async observeTradeSources(
+    symbols: string[],
+    durationMs: number,
+    requestTimeoutMs = 20_000,
+  ): Promise<TradeSourceObservation> {
+    if (this.observing) throw new Error("OBSERVATION_ALREADY_RUNNING");
+    this.observing = true;
+    try {
+      const result = await observeRawTradeSources(
+        this.ctx,
+        symbols,
+        durationMs,
+        requestTimeoutMs,
+        this.clock,
+      );
+      if (result.reusable) this.observing = false;
+      return result;
+    } catch (error) {
+      // Release only for known pre-native validation failures. Unknown failures poison ownership.
+      if (
+        error instanceof Error &&
+        ["TRADE_SOURCE_BOUNDS_INVALID", "TRADE_SOURCE_CLOCK_INVALID"].includes(
+          error.message,
+        )
+      )
+        this.observing = false;
+      throw error;
+    }
   }
   async observeConfirmed(
     symbols: string[],

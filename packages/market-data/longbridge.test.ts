@@ -151,6 +151,7 @@ describe("SDK adapter read-only boundary", () => {
         currency: "CNY",
         lotSize: 100,
         rulesVerified: false,
+        securityBoard: null,
       },
     ]);
   });
@@ -292,4 +293,177 @@ describe("confirmed subscription lifecycle", () => {
     await assertion;
     expect(f.ctx.unsubscribeCandlesticks).toHaveBeenCalledTimes(1);
   });
+});
+
+describe("unmixed minute endpoint requests", () => {
+  it("fetches a fresh remote RAW minute seed without the fetchBars cache or SDK subscriber tail", async () => {
+    const ctx = {
+      candlesticks: vi.fn(async () => [candle()]),
+      subscribeCandlesticks: vi.fn(),
+    };
+    const adapter = new LongbridgeReadOnlyAdapter(
+      ctx as unknown as QuoteContext,
+    );
+    await adapter.fetchMinuteSeed("688008.SH", "1m", 60);
+    await adapter.fetchMinuteSeed("688008.SH", "1m", 60);
+    expect(ctx.candlesticks).toHaveBeenCalledTimes(2);
+    expect(ctx.candlesticks).toHaveBeenCalledWith("688008.SH", 1, 60, 0, 0);
+    expect(ctx.subscribeCandlesticks).not.toHaveBeenCalled();
+    await expect(adapter.fetchMinuteSeed("NVDA.US", "1m", 60)).rejects.toThrow(
+      "MINUTE_SEED_BOUNDS_INVALID",
+    );
+    await expect(
+      adapter.fetchMinuteSeed("688008.SH", "1m", 61),
+    ).rejects.toThrow("MINUTE_SEED_BOUNDS_INVALID");
+  });
+  it("retains static security board independently from order lot size", async () => {
+    const adapter = new LongbridgeReadOnlyAdapter({
+      staticInfo: vi.fn(async () => [
+        {
+          symbol: "688008.SH",
+          exchange: "SSE",
+          currency: "CNY",
+          lotSize: 100,
+          board: 15,
+        },
+      ]),
+    } as unknown as QuoteContext);
+    expect(await adapter.instrumentEvidence(["688008.SH"])).toMatchObject([
+      { securityBoard: 15, lotSize: 100, rulesVerified: false },
+    ]);
+  });
+});
+
+describe("CN source probe through the production read-only SDK adapter", () => {
+  it("keeps seed and trade quantities separate all the way to private diagnostics", async () => {
+    vi.useFakeTimers();
+    const { runMarketProbe } = await import("./probe.js");
+    const { summarizeMarketProbe } = await import("./probe-summary.js");
+    const at = Date.parse("2026-10-13T07:00:01Z");
+    let tradeCallback: Parameters<QuoteContext["setOnTrades"]>[0] = () => {};
+    const ctx = {
+      quoteLevel: () => "LV1",
+      quotePackageDetails: async () => [],
+      staticInfo: async () => [
+        {
+          symbol: "688008.SH",
+          exchange: "SSE",
+          currency: "CNY",
+          lotSize: 100,
+          board: 15,
+        },
+      ],
+      quote: async () => [
+        {
+          symbol: "688008.SH",
+          lastDone: { toString: () => "101" },
+          timestamp: new Date(at),
+        },
+      ],
+      candlesticks: vi.fn(async () => [{ ...candle(at - 1000), volume: 1000 }]),
+      tradingDays: async () => ({
+        tradingDays: [{ toString: () => "2026-10-13" }],
+        halfTradingDays: [],
+      }),
+      setOnTrades: (next: typeof tradeCallback) => {
+        tradeCallback = next;
+      },
+      subscribe: vi.fn(async () => {
+        tradeCallback(null, {
+          symbol: "688008.SH",
+          data: {
+            trades: [
+              {
+                timestamp: new Date(at - 1000),
+                price: { toString: () => "101" },
+                volume: 2,
+                tradeType: "",
+                direction: 0,
+                tradeSession: 0,
+              },
+            ],
+          },
+        } as Parameters<typeof tradeCallback>[1]);
+      }),
+      unsubscribe: vi.fn(async () => {}),
+      subscribeCandlesticks: vi.fn(),
+    };
+    const adapter = new LongbridgeReadOnlyAdapter(
+      ctx as unknown as QuoteContext,
+      () => at,
+    );
+    const pending = runMarketProbe({
+      symbols: ["688008.SH"],
+      minuteSources: true,
+      observeSeconds: 1,
+      env: {
+        LONGBRIDGE_APP_KEY: "fixture-only",
+        LONGBRIDGE_APP_SECRET: "fixture-only",
+        LONGBRIDGE_ACCESS_TOKEN: "fixture-only",
+      },
+      runtime: "v24.0.0",
+      sdk: "5.2.0",
+      platform: "linux",
+      architecture: "x64",
+      now: () => at,
+      requestSpacingMs: 0,
+      requestTimeoutMs: 20,
+      checkpoint: () => {},
+      adapterFactory: () => adapter,
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    const { report, exitCode } = await pending,
+      diagnostic = report.minuteSourceDiagnostic!;
+    expect(exitCode).toBe(2);
+    expect(diagnostic.sourceMerge).toBe("REJECTED");
+    expect(diagnostic.seedDiagnostics[0].unitCandidates.SHARE.volume).toBe(
+      "1000",
+    );
+    expect(
+      diagnostic.tradeDiagnostics[0].conditionalShareEquivalent?.volume,
+    ).toBe("200");
+    expect(diagnostic.overlaps).toHaveLength(2);
+    expect(
+      diagnostic.seedDiagnostics.every(
+        (s) =>
+          s.time.canonicalInterval === null && s.time.finality === "UNKNOWN",
+      ),
+    ).toBe(true);
+    expect(diagnostic.counts.closingBoundaryLabels).toBe(4);
+    expect(ctx.candlesticks).toHaveBeenCalledTimes(2);
+    expect(ctx.subscribeCandlesticks).not.toHaveBeenCalled();
+    expect(ctx.unsubscribe).toHaveBeenCalledWith(["688008.SH"], [3]);
+    const summary = summarizeMarketProbe(report, exitCode, true);
+    expect(summary.minuteSources).toMatchObject({
+      liveEligible: false,
+      counts: { overlappingBuckets: 2 },
+    });
+    expect(JSON.stringify(summary)).not.toMatch(
+      /conditionalShareEquivalent|"tradePackets":\[|originalVolume|fixture-only/,
+    );
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+it("shares the observation ownership gate with confirmed mode and fences unsettled raw subscription", async () => {
+  vi.useFakeTimers();
+  const ctx = {
+    setOnTrades: vi.fn(),
+    subscribe: vi.fn(() => new Promise<void>(() => {})),
+    unsubscribe: vi.fn(async () => {}),
+    setOnCandlestick: vi.fn(),
+    subscribeCandlesticks: vi.fn(),
+  };
+  const adapter = new LongbridgeReadOnlyAdapter(ctx as unknown as QuoteContext);
+  const pending = adapter.observeTradeSources(["688008.SH"], 1000, 20);
+  await expect(
+    adapter.observeConfirmed(["688008.SH"], 1000, 20),
+  ).rejects.toThrow("OBSERVATION_ALREADY_RUNNING");
+  await vi.advanceTimersByTimeAsync(20);
+  expect((await pending).reusable).toBe(false);
+  await expect(
+    adapter.observeTradeSources(["688008.SH"], 1000, 20),
+  ).rejects.toThrow("OBSERVATION_ALREADY_RUNNING");
+  expect(ctx.setOnCandlestick).not.toHaveBeenCalled();
+  expect(ctx.subscribe).toHaveBeenCalledOnce();
 });

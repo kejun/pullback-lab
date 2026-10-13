@@ -76,3 +76,52 @@ describe("isolated probe CLI", () => {
     );
   });
 });
+
+it("requires a private create-only journal for minute-source mode and forces a safe summary", () => {
+  const missingOutput = probe([
+    "--symbols",
+    "688008.SH",
+    "--minute-sources",
+    "--observe-seconds",
+    "1",
+  ]);
+  expect(missingOutput.status).toBe(1);
+  const dir = mkdtempSync(join(tmpdir(), "pullback-minute-source-"));
+  try {
+    const file = join(dir, "private.jsonl");
+    const result = probe([
+      "--symbols",
+      "688008.SH",
+      "--minute-sources",
+      "--observe-seconds",
+      "1",
+      "--output",
+      file,
+    ]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toBe("");
+    const summary = JSON.parse(result.stdout);
+    expect(summary.schema).toBe("pullback-lab-market-probe-summary-v1");
+    expect(summary.liveEligible).toBe(false);
+    expect(summary.status).toBe("BLOCKED");
+    expect(result.stdout).not.toContain("tradePackets");
+    expect(result.stdout).not.toContain(file);
+    if (process.platform !== "win32")
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+    const original = readFileSync(file, "utf8");
+    expect(
+      probe([
+        "--symbols",
+        "688008.SH",
+        "--minute-sources",
+        "--observe-seconds",
+        "1",
+        "--output",
+        file,
+      ]).status,
+    ).toBe(1);
+    expect(readFileSync(file, "utf8")).toBe(original);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

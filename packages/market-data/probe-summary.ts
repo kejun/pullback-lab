@@ -1,3 +1,4 @@
+import { summarizeCnMinuteSources } from "./cn-minute-sources.js";
 import type { ProbeReport } from "./probe.js";
 const checkNames = [
   "credentials",
@@ -32,6 +33,13 @@ const reasons = new Set([
   "QUOTE_PROBE_STEP_FAILED",
   "PREVIOUS_REQUEST_UNSETTLED",
   "OBSERVATION_NOT_REQUESTED",
+  "MINUTE_SOURCE_CAPTURE_INVALID",
+  "TRADE_SOURCE_SUBSCRIBE_FAILED",
+  "TRADE_SOURCE_TIMEOUT",
+  "TRADE_SOURCE_STREAM_ERROR",
+  "TRADE_SOURCE_SAMPLE_INVALID",
+  "TRADE_SOURCE_SAMPLE_LIMIT",
+  "TRADE_SOURCE_CLEANUP_FAILED",
 ]);
 const credentialNames = new Set([
   "LONGBRIDGE_APP_KEY",
@@ -73,8 +81,21 @@ export function summarizeMarketProbe(
       ];
     }),
   );
+  let minuteSources;
+  if (report.minuteSourceCapture || report.minuteSourceDiagnostic) {
+    try {
+      minuteSources = summarizeCnMinuteSources(report.minuteSourceDiagnostic!);
+    } catch {
+      minuteSources = {
+        status: "UNKNOWN",
+        liveEligible: false,
+        reason: "MINUTE_SOURCE_CAPTURE_INVALID",
+      };
+    }
+  }
   return {
     schema: "pullback-lab-market-probe-summary-v1",
+    ...(minuteSources ? { minuteSources } : {}),
     status: statuses.has(report.status) ? report.status : "BLOCKED",
     exitCode: exitCode === 1 ? 1 : 2,
     reportSaved,
@@ -115,7 +136,7 @@ export function summarizeMarketProbe(
       return {
         id: label(
           step.id,
-          /^(?:adapter|quote-level|quote-packages|confirmed-observation|calendar:(?:US|CN)|(?:instrument|quote):[A-Z0-9._-]{1,30}\.(?:US|SH|SZ)|bars:[A-Z0-9._-]{1,30}\.(?:US|SH|SZ):(?:1D|1m|5m)|history:[A-Z0-9._-]{1,30}\.(?:US|SH|SZ):1D:\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}|history-calendar:(?:US|CN):\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2})$/,
+          /^(?:adapter|quote-level|quote-packages|confirmed-observation|minute-source-observation|calendar:(?:US|CN)|(?:instrument|quote):[A-Z0-9._-]{1,30}\.(?:US|SH|SZ)|bars:[A-Z0-9._-]{1,30}\.(?:US|SH|SZ):(?:1D|1m|5m)|history:[A-Z0-9._-]{1,30}\.(?:US|SH|SZ):1D:\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}|history-calendar:(?:US|CN):\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2})$/,
         ),
         status: stepStatuses.has(step.status) ? step.status : "FAILED",
         ...(step.reason && reasons.has(step.reason)
@@ -124,6 +145,13 @@ export function summarizeMarketProbe(
         elapsedMs: count(step.elapsedMs),
         ...(step.id.startsWith("bars:") || step.id.startsWith("history:")
           ? { count: count(evidence.count) }
+          : {}),
+        ...(step.id === "minute-source-observation"
+          ? {
+              events: count(evidence.events),
+              trades: count(evidence.trades),
+              cleanup: evidence.cleanup === "COMPLETE" ? "COMPLETE" : "UNKNOWN",
+            }
           : {}),
         ...(step.id === "confirmed-observation"
           ? {
