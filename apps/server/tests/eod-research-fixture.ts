@@ -1,3 +1,4 @@
+import { prepareLongbridgeHistoryCandidates } from "../longbridge-history-input.js";
 /** Isolated provider-shaped data. Never imported by production configuration. */
 import type { Market } from "../../../packages/contracts/index.js";
 import type { EodResearchInput } from "../eod-research.js";
@@ -124,6 +125,10 @@ export function eodFixture(market: Market = "US") {
   const input: EodResearchInput = {
     capture,
     review: {
+      expectedCaptureHash: prepareLongbridgeHistoryCandidates(
+        capture,
+        instrument,
+      ).captureHash,
       history: {
         instrument,
         capability: {

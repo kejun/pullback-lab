@@ -7,7 +7,7 @@
 1. 使用原有应用凭据环境，按 [有界历史采集](bounded-history.md) 在私有新文件中采集明确日期窗口。先确认 API 历史权限、额度和留存许可，避免与其他采样并发。新窗口模式保存每页全部 RAW 日线和同范围 tradingDays/halfDays，最多1096个自然日，始终保留 UNKNOWN/UNVERIFIED。短 probe 的末5根样本不能作为完整窗口。
 2. 服务器代码用 `readLongbridgeHistoryCapture` 读取最后完整检查点；其结果的 `capture` 是资料，不是信任凭证。缺页、冲突、非终态或截断尾部拒绝，不回退到较早的成功检查点。
 3. 对明确的 SDK5.2.0 `historyCandlesticksByDate` / Day / NoAdjust / Intraday 路径独立审核历史权限、来源、单位、当地午夜时间标签及已完成历史的最终状态语义。审核逐日会话（含休市、DST、半日市/午休）、至少250个开市日的完整日线及整个范围的公司行动。供应商日期列表不包含历史时段，SDK confirmed 不认证本历史端点。官方单次拆股公告不能替代完整窗口账本。
-4. 由代码审查后的固定服务器依赖制作 `EodResearchInput {capture, review}`，安装在 `apps/server/production-research-config.ts`。`review.history` 复用现有 CapabilityEvidence、CalendarDay、AdjustmentDataset、证券规则及 actionEvidenceVersion；`review.endpoint` 绑定该端点的单位与最终历史/时间锚点口径。capture 的精确哈希由读取器重算，不接受外填哈希作为认证。审核时刻不得早于完整采集和所用资料的知识时刻。
+4. 由代码审查后的固定服务器依赖制作 `EodResearchInput {capture, review}`，安装在 `apps/server/production-research-config.ts`。`review.history` 复用现有 CapabilityEvidence、CalendarDay、AdjustmentDataset、证券规则及 actionEvidenceVersion；`review.endpoint` 绑定该端点的单位与最终历史/时间锚点口径。review.expectedCaptureHash 固定独立审核过的那份 capture；读取器重新计算哈希后必须与它严格相等。任何 OHLC、日历或接收元数据变化都必须重新审核，不能在启动时自动把当前文件哈希抄入 review。哈希匹配只是审核绑定，不独自认证来源。审核时刻不得早于完整采集和所用资料的知识时刻。
 5. 在已存在的研究池证券上安装；未知证券身份不自动创建，已核验但变化的证券规则拒绝覆盖。用户无需手写250根、猜拆股比例或填 `verified:true`。真实原始资料仍在私有文件/数据库，不放入公共 PR；配置路径必须由服务器代码固定，不从 HTTP 或任意 env 模块路径读取。
 
 已有真实资料尚未审计时，继续保持默认 undefined/off。只有经过独立审计后，运维者才在原授权范围内使用：

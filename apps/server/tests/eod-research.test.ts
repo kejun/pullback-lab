@@ -1,3 +1,4 @@
+import { prepareLongbridgeHistoryCandidates } from "../longbridge-history-input.js";
 import { describe, it, expect } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -112,6 +113,10 @@ describe("independent audited EOD research", () => {
       if (kind === "duplicate")
         capture.pages[0].samples.push({ ...capture.pages[0].samples[0] });
       if (kind === "half") input.review.halfTradingDates = [];
+      input.review.expectedCaptureHash = prepareLongbridgeHistoryCandidates(
+        capture,
+        input.review.history.instrument,
+      ).captureHash;
       expect(() => buildEodResearchContext(input, now)).toThrow();
     }
   });
@@ -264,6 +269,10 @@ describe("EOD integrity and persistence regressions", () => {
     (volume) => {
       const { input, now, capture } = eodFixture();
       capture.pages[0].samples[0].volume = volume;
+      input.review.expectedCaptureHash = prepareLongbridgeHistoryCandidates(
+        capture,
+        input.review.history.instrument,
+      ).captureHash;
       expect(() => buildEodResearchContext(input, now)).toThrow(
         "EOD_CAPTURE_VOLUME_INVALID",
       );
@@ -333,4 +342,28 @@ describe("EOD integrity and persistence regressions", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+it("binds a review to exact raw capture content: OHLC, calendars and receipts cannot silently inherit approval", () => {
+  for (const change of ["ohlc", "calendar", "receipt"]) {
+    const { input, now, capture } = eodFixture();
+    if (change === "ohlc") capture.pages[0].samples[0].close = "102";
+    if (change === "calendar") capture.calendarPages[0].tradingDays.reverse();
+    if (change === "receipt") capture.pages[0].samples[0].receivedAt--;
+    expect(() => buildEodResearchContext(input, now)).toThrow(
+      "EOD_CAPTURE_REVIEW_MISMATCH",
+    );
+  }
+  const { input, now, capture } = eodFixture();
+  const prior = buildEodResearchContext(input, now);
+  capture.pages[0].samples[0].close = "102";
+  // Explicit new isolated review, not something startup is allowed to do automatically.
+  input.review.expectedCaptureHash = prepareLongbridgeHistoryCandidates(
+    capture,
+    input.review.history.instrument,
+  ).captureHash;
+  input.review.endpoint.evidenceId = "isolated-rereview-changed-capture";
+  const reviewed = buildEodResearchContext(input, now);
+  expect(reviewed.id).not.toBe(prior.id);
+  expect(reviewed.captureHash).not.toBe(prior.captureHash);
 });

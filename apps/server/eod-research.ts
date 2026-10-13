@@ -38,6 +38,8 @@ export interface EodResearchInput {
   /** Untrusted full raw capture. Its hash and scope are recomputed, never supplied as approval. */
   capture: unknown;
   review: {
+    /** Frozen during independent review. Never copy the latest file hash at startup. */
+    expectedCaptureHash: string;
     history: Omit<
       LongbridgeContextInput,
       "rawDaily" | "dailyTimestampAnchor" | "probeReportId"
@@ -222,6 +224,7 @@ export function reviewedEodHistory(
   );
   const { scope, captureHash, capture } = candidate;
   if (
+    review.expectedCaptureHash !== captureHash ||
     candidate.duplicateTimestamps.length ||
     scope.from !== review.history.historyStartDate ||
     scope.through !== review.history.basisDate ||
