@@ -15,7 +15,7 @@ import {
   emptyMarketWorkerStatus,
   type MarketWorkerStatus,
 } from "./market-worker.js";
-import { trustedClosedSupport } from "./closed-bar-adapter.js";
+import { trustedDailyResearch } from "./eod-research.js";
 import { universeRevision } from "./universe-service.js";
 
 const hash = (value: unknown) =>
@@ -89,7 +89,7 @@ export class ScreeningService {
         revision: universeRevision(this.store),
         series,
         trusted: rows.map((row, i) =>
-          trustedClosedSupport(this.store.db, row.instrument, series[i], now),
+          trustedDailyResearch(this.store.db, row.instrument, series[i], now),
         ),
       };
     })();

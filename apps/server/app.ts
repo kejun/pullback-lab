@@ -1,3 +1,8 @@
+import {
+  installEodResearch,
+  trustedDailyResearch,
+  type EodResearchInput,
+} from "./eod-research.js";
 import type { ObservationClock } from "./runtime-observation.js";
 import { ClosedBarRuntime } from "./closed-bar-runtime.js";
 import {
@@ -69,6 +74,8 @@ export interface AppOptions {
   marketStatus?: () => MarketWorkerStatus;
   /** Trusted server dependency only; never read from configuration JSON or a request. */
   closedBarAdapter?: ClosedBarAdapter;
+  /** Static reviewed server histories only; never populated from a request or uploaded verification. */
+  eodResearch?: readonly EodResearchInput[];
   /** Audited server factory shares this store for quota accounting. Never an HTTP/env input. */
   closedBarAdapterFactory?: (store: Store) => ClosedBarAdapter;
 }
@@ -245,6 +252,7 @@ export async function createApp(
   app.decorate("runtime", runtime);
   let adapter: ClosedBarAdapter | undefined;
   try {
+    installEodResearch(store, options.eodResearch ?? [], now());
     if (options.closedBarAdapter && options.closedBarAdapterFactory)
       throw new Error("CLOSED_ADAPTER_CONFIGURATION_CONFLICT");
     adapter =
@@ -625,7 +633,7 @@ export async function createApp(
         ? latest?.anchorTime
         : z.coerce.number().int().nonnegative().parse(request.query.anchorTime);
     const anchor = daily.findIndex((bar) => bar.time === anchorTime);
-    const providerContext = trustedClosedSupport(
+    const providerContext = trustedDailyResearch(
       store.db,
       store.instrument(request.params.id).instrument,
       daily,

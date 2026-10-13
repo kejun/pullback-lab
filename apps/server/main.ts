@@ -1,3 +1,5 @@
+import { prepareProductionResearch } from "./production-research.js";
+import { auditedEodResearch } from "./production-research-config.js";
 import { existsSync } from "node:fs";
 import { prepareProductionMarket } from "./production-market.js";
 import { auditedLongbridgeConfiguration } from "./production-market-config.js";
@@ -35,6 +37,7 @@ try {
   const config = readStartupConfig();
   // Validate the audited server installation before any lock, migration or recovery writes.
   const market = prepareProductionMarket(auditedLongbridgeConfiguration);
+  const research = prepareProductionResearch(auditedEodResearch);
   lock = acquireServiceLock(config.databasePath);
   const backup = await backupBeforeMigration(
     lock.databasePath,
@@ -50,6 +53,7 @@ try {
   app = await createApp({
     databasePath: lock.databasePath,
     closedBarAdapterFactory: market.factory,
+    eodResearch: research.histories,
     password: config.password,
     demo: config.demo,
     origin: config.origin,
