@@ -76,6 +76,13 @@ jobs:
           path: test-results/**/*intrabar-monitor*.png
           if-no-files-found: error
           retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eod-research-browser-evidence
+          path: test-results/**/*eod-research*.png
+          if-no-files-found: error
+          retention-days: 7
   deployment:
     runs-on: ubuntu-latest
     timeout-minutes: 15
