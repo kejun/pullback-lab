@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import Decimal from "decimal.js";
 import type { Bar } from "../contracts/index.js";
+import type { MarketSession } from "./calendar.js";
 const D = Decimal.clone({ precision: 50, rounding: Decimal.ROUND_HALF_EVEN });
 const timestamp = (value: number) => Number.isSafeInteger(value) && value >= 0;
 const decimal = (value: unknown) =>
@@ -66,12 +67,43 @@ export function adjustForSplits(
   asOf: number,
   basisAt: number,
 ): AdjustmentResult {
+  return adjustKnownSplits(bars, dataset, asOf, basisAt, false);
+}
+/**
+ * Explicit server calendar projection: prices may target a future session open,
+ * but publication/receipt knowledge is still cut off at the real asOf. This does
+ * not prove that unannounced future actions cannot occur; the caller must retain
+ * the reviewed coverage and invalidate it on any new evidence.
+ */
+export function adjustForScheduledSession(
+  bars: readonly Bar[],
+  dataset: AdjustmentDataset,
+  asOf: number,
+  session: MarketSession,
+): AdjustmentResult {
+  if (
+    !timestamp(session.open) ||
+    !timestamp(session.close) ||
+    session.close <= session.open ||
+    !session.source ||
+    !session.calendarVersion
+  )
+    return { ok: false, bars: [], reason: "TARGET_SESSION_UNVERIFIED" };
+  return adjustKnownSplits(bars, dataset, asOf, session.open, true);
+}
+function adjustKnownSplits(
+  bars: readonly Bar[],
+  dataset: AdjustmentDataset,
+  asOf: number,
+  basisAt: number,
+  scheduled: boolean,
+): AdjustmentResult {
   const bad = (reason: string): AdjustmentResult => ({
     ok: false,
     bars: [],
     reason,
   });
-  if (!timestamp(asOf) || !timestamp(basisAt) || basisAt > asOf)
+  if (!timestamp(asOf) || !timestamp(basisAt) || (!scheduled && basisAt > asOf))
     return bad("ADJUSTMENT_CUTOFF_INVALID");
   const c = dataset.coverage;
   if (bars.length > 10000 || dataset.actions.length > 5000)
@@ -90,7 +122,11 @@ export function adjustForSplits(
     c.through < basisAt
   )
     return bad("CORPORATE_ACTION_COVERAGE_UNKNOWN");
-  if (bars.some((x) => x.receivedAt > asOf || x.time * 1000 > basisAt))
+  if (
+    bars.some(
+      (x) => x.receivedAt > asOf || x.time * 1000 > Math.min(asOf, basisAt),
+    )
+  )
     return bad("BAR_NOT_KNOWN_AT_CUTOFF");
   if (bars.some((x) => x.adjustmentVersion !== "raw-v1"))
     return bad("RAW_PRICE_VOLUME_REQUIRED");

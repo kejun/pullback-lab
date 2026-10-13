@@ -1,6 +1,6 @@
 # Longbridge 正式闭合适配器：已接线代码与待验收事实
 
-`LongbridgeClosedBarAdapter` 是 SDK 5.2.0 的真实只读运输实现。其输出直接进入已有 `ClosedBarRuntime`，不是另一个采样 CLI。当前交付只用 SDK 形状的隔离模拟验证；没有配置实际凭据、连接真实供应商、购买权限或部署目标主机。默认 `npm start` 不安装此适配器，两市场仍为 UNKNOWN。
+`LongbridgeClosedBarAdapter` 是 SDK 5.2.0 的真实只读运输实现。其输出直接进入已有 `ClosedBarRuntime`，不是另一个采样 CLI。当前交付只用 SDK 形状的隔离模拟验证；没有配置实际凭据、连接真实供应商、购买权限或部署目标主机。默认 `npm start` 不安装此适配器，两市场仍为 UNKNOWN。主入口现有静态审计服务器配置槽和 `market:check`，详见 [生产装配与本机检查](production-market.md)；单独设置环境开关不能授予能力。
 
 ## 服务器信任边界
 
@@ -8,7 +8,7 @@
 
 `contexts` 不是用户配置模板，也不从历史上传、分钟采样隔离库或人工公司行动的 COMPLETE 声明自动生成。它必须引用实际探针报告、证券规则、完整日线及拆股来源的已审计身份。现有验证器要求权限/地区/单位/日历/闭合语义/延迟/时钟有效、规则已知、至少250根完成日线、同一价格基准、选取时已知；运行器冻结原始上下文及日线/规则哈希，后续计划固定 context ID。
 
-本适配器额外要求 source 精确为 `longbridge-node-5.2.0`，证券代码与市场相符，最多十只服务器已登记研究标的，并清除所有逐笔连续/顺序能力声明。因此它最多是 CLOSE_CONFIRM，不开放 INTRABAR_CROSS。地区不合格的 A 股、证据过期、未知单位或未知额度均不能打开 SDK 连接。凭据只在 start 时读取，错误不会回显秘密或供应商原文。
+本适配器额外要求 source 精确为 `longbridge-node-5.2.0`，证券代码与市场相符，最多十只服务器已登记研究标的，并清除所有逐笔连续/顺序能力声明。因此它最多是 CLOSE_CONFIRM，不开放 INTRABAR_CROSS。锁定 SDK 的 CN 实时聚合量具有已知的100股单位含义，而当前运输只实现原生 SHARE；CN 正式分钟入口因此明确拒绝 `LONGBRIDGE_CN_MINUTE_UNIT_UNSUPPORTED`，服务端布尔声明也不能覆盖这个矛盾。历史/日线端点单位不能由这条实时实现推导。地区不合格的 A 股、证据过期、未知单位或未知额度均不能打开 SDK 连接。凭据只在 start 时读取，错误不会回显秘密或供应商原文。
 
 ## 真实接线
 
@@ -19,7 +19,7 @@
 - 只接收 `isConfirmed === true`、Min_1、Intraday；SDK Date 被解释为已审计的一分钟起点。未知/非法时间、非安全整数成交量、异常 OHLC、提前确认或报价停牌状态使连接失效。
 - 当前接口以已审计的 SHARE 与 RAW 合约转换分钟。`unitsVerified` 与 `finalityContractVerified` 的审计必须包含此具体端点的股数/成交额币种与尺度、分钟起点及推送未复权语义；公开文档的字段名不足以独自证明这些事实。
 - 实际接收时间仍由运行器在回调交付时捕获。报价是常规时段最后成交价估计，不是可成交卖价。
-- SDK 没有提供供应商修订号/包序号。适配器固定标记 `sdk-unversioned-v1`，不制造递增版本；同一蜡烛内容变化进入已有冲突暂停路径，不改旧记录。
+- 此 SDK 蜡烛回调没有提供供应商修订号/可靠包序号（锁定实现的聚合推送 sequence 固定为0）。适配器固定标记 `sdk-unversioned-v1`，不制造递增版本；同一蜡烛内容变化进入已有冲突暂停路径，不改旧记录。
 - 没有消息不能证明无成交。本适配器从不发出 noTrade、不补造 OHLC。缺分钟、迟到、修订以及队列完整性继续由原运行器阻断。
 
 ## 额度与关闭
@@ -44,15 +44,23 @@ SDK 没有显式 close/cancel 及连接代际通知。原运行器关闭等待�
 
 核对日期：2026-10-13；代码依赖锁定 longbridge 5.2.0，未来网页和包变更须重新核验。
 
-| 官方来源 | 可用事实 | 不足以证明 |
-| --- | --- | --- |
-| [开始使用](https://open.longbridge.com/docs/getting-started) | 时间戳 UTC 编码 | 日线标签和分钟时间锚点的具体映射 |
-| [历史蜡烛](https://open.longbridge.com/docs/quote/pull/history-candlestick) | NoAdjust、常规时段参数、最多1000条 | 历史日线最终状态、完整证券交易历史、股数单位、修订保证 |
-| [闭合蜡烛推送](https://open.longbridge.com/zh-HK/docs/quote/push/candlestick) | Confirmed 在周期结束时回调 | 不修订、无丢失、空成交行为、断线连续性 |
-| [交易日](https://open.longbridge.com/docs/quote/pull/trade-day) | 最近一年内、至多一个月窗口的交易日与半日市列表 | 更早日历和逐日完整时段 |
-| [交易时段](https://open.longbridge.com/docs/quote/pull/trade-session) | 当日市场时段 | 历史半日市小时；示例CN至14:57不能直接当全天15:00收盘规则 |
-| [公司行动](https://open.longbridge.com/docs/fundamental/fundamental/corporate-actions) | SDK corpAction(symbol) 返回事件描述 | 结构化拆股比例、正确生效时刻、完整覆盖及空列表无拆股证明 |
-| [Node SDK](https://longbridge.github.io/openapi/nodejs/classes/QuoteContext.html) | 实际订阅、回调和退订接口 | 逐笔包级 sequence 或显式关闭/取消能力 |
+| 官方来源                                                                               | 可用事实                                       | 不足以证明                                               |
+| -------------------------------------------------------------------------------------- | ---------------------------------------------- | -------------------------------------------------------- |
+| [开始使用](https://open.longbridge.com/docs/getting-started)                           | 时间戳 UTC 编码                                | 日线标签和分钟时间锚点的具体映射                         |
+| [历史蜡烛](https://open.longbridge.com/docs/quote/pull/history-candlestick)            | NoAdjust、常规时段参数、最多1000条             | 历史日线最终状态、完整证券交易历史、股数单位、修订保证   |
+| [闭合蜡烛推送](https://open.longbridge.com/zh-HK/docs/quote/push/candlestick)          | 当前网页描述 Confirmed 回调                    | 不修订、无丢失、空成交行为、断线连续性                   |
+| [交易日](https://open.longbridge.com/docs/quote/pull/trade-day)                        | 最近一年内、至多一个月窗口的交易日与半日市列表 | 更早日历和逐日完整时段                                   |
+| [交易时段](https://open.longbridge.com/docs/quote/pull/trade-session)                  | 当日市场时段                                   | 历史半日市小时；示例CN至14:57不能直接当全天15:00收盘规则 |
+| [公司行动](https://open.longbridge.com/docs/fundamental/fundamental/corporate-actions) | SDK corpAction(symbol) 返回事件描述            | 结构化拆股比例、正确生效时刻、完整覆盖及空列表无拆股证明 |
+| [Node SDK](https://longbridge.github.io/openapi/nodejs/classes/QuoteContext.html)      | 实际订阅、回调和退订接口                       | 逐笔包级 sequence 或显式关闭/取消能力                    |
+
+### 锁定5.2.0实现与网页协议的区别
+
+[官方锁定源码 b2f749a](https://github.com/longbridge/openapi/blob/b2f749a3c68cc4f05642b37fc790fb711d2dfb13/rust/src/quote/core.rs#L662-L779)先取1000条 NoAdjust 历史，再订阅 Quote/Trade 并在客户端合并。[AppendNew 路径](https://github.com/longbridge/openapi/blob/b2f749a3c68cc4f05642b37fc790fb711d2dfb13/rust/src/quote/core.rs#L1220-L1281)产生 `is_confirmed`，并把聚合推送的 sequence 设为0；它不是服务端不可变最终收据。[重连路径](https://github.com/longbridge/openapi/blob/b2f749a3c68cc4f05642b37fc790fb711d2dfb13/rust/src/quote/core.rs#L880-L918)重新订阅且不请求 first push，没有该路径的历史回补保证。收到 confirmed、凑齐分钟数或本机短时观察均不能认证无丢失/最终不修订；完整性能力仍需独立且有效的契约证据，否则不得启用。
+
+[CN市场参数](https://github.com/longbridge/openapi/blob/b2f749a3c68cc4f05642b37fc790fb711d2dfb13/rust/crates/candlesticks/src/markets.rs#L40-L52)是 lot_size=100，[成交聚合](https://github.com/longbridge/openapi/blob/b2f749a3c68cc4f05642b37fc790fb711d2dfb13/rust/src/quote/types.rs#L188-L212)按 price×volume×lot_size 形成成交额而原样累加volume。这只证明此实时聚合分支的单位，不能认证历史种子、历史分钟或日线相同。当前没有安装相应端点转换契约，CN实时入口保持关闭。
+
+[wire逐笔协议](https://open.longbridge.com/docs/quote/push/trade)本身有 sequence；不能说整个供应商协议没有序号。[Rust字段](https://github.com/longbridge/openapi/blob/b2f749a3c68cc4f05642b37fc790fb711d2dfb13/rust/src/quote/push_types.rs#L188-L196)与[Node回调映射](https://github.com/longbridge/openapi/blob/b2f749a3c68cc4f05642b37fc790fb711d2dfb13/nodejs/src/quote/context.rs#L123-L132)表明锁定 Node 回调没有暴露该字段；即便另加薄适配暴露它，也不能由“有序号”推导作用域、严格连续、重连epoch与回补规则。
 
 ## 真正接入前的最小验收清单
 

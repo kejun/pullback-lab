@@ -1,3 +1,4 @@
+import type { ObservationClock } from "../runtime-observation.js";
 /** Isolated contract fixture. Never imported by application or provider startup. */
 import type { Funds, PlanInput } from "../../../packages/contracts/index.js";
 import {
@@ -161,6 +162,7 @@ export const testFunds: Funds = {
 export async function setupClosed(
   options: {
     path?: string;
+    observationClock?: ObservationClock;
     autoDrain?: boolean;
     activate?: boolean;
     planInput?: Partial<PlanInput>;
@@ -181,6 +183,7 @@ export async function setupClosed(
     adapter,
     now: () => now,
     autoDrain: options.autoDrain,
+    observationClock: options.observationClock,
   });
   await runner.start();
   store.confirmScreening(undefined, 0, now);

@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { summarizeMarketProbe } from "../packages/market-data/probe-summary.js";
 import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
 import { parseArgs } from "node:util";
 import {
@@ -11,16 +12,20 @@ let output: number | undefined;
 let latest: ProbeReport | undefined;
 let exitCode = 2;
 let outputFailed = false;
+let summary = false;
+let reportSaved = false;
 try {
   const { values } = parseArgs({
     options: {
       symbols: { type: "string" },
+      summary: { type: "boolean", default: false },
       "observe-seconds": { type: "string", default: "0" },
       output: { type: "string" },
     },
     allowPositionals: false,
     strict: true,
   });
+  summary = values.summary!;
   // Create only, owner-readable. JSONL checkpoints preserve prior evidence if a later step fails.
   if (values.output) output = openSync(values.output, "wx", 0o600);
   const result = await runMarketProbe({
@@ -57,6 +62,7 @@ try {
           offset += written;
         }
         fsyncSync(output);
+        reportSaved = true;
       }
     },
   });
@@ -91,6 +97,14 @@ const payload = latest
     }
   : { status: "BLOCKED", failureCode: "PROBE_ARGUMENT_OR_OUTPUT_FAILED" };
 // Native SDK sockets can remain alive after a timed-out call. Flush the report, then terminate this isolated CLI.
-process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`, () =>
+const terminalPayload =
+  summary && latest
+    ? summarizeMarketProbe(
+        payload as ProbeReport,
+        exitCode,
+        reportSaved && !outputFailed,
+      )
+    : payload;
+process.stdout.write(`${JSON.stringify(terminalPayload, null, 2)}\n`, () =>
   process.exit(exitCode),
 );

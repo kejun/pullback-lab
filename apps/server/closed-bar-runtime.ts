@@ -1,10 +1,18 @@
 import {
+  RuntimeObservation,
+  type ObservationClock,
+} from "./runtime-observation.js";
+import {
   intrabarContractReason,
   tickToken,
   validateTickPacket,
   type TickPacket,
   type TickCursor,
 } from "./intrabar-contract.js";
+import {
+  assertClosedActionEvidenceCurrent,
+  closedActionEvidenceCurrent,
+} from "./closed-action-binding.js";
 import { withDeadline } from "../../packages/market-data/deadline.js";
 import type { ClosedRiskInput } from "./closed-risk.js";
 import { randomUUID } from "node:crypto";
@@ -88,8 +96,10 @@ interface Options {
   recover?: boolean;
   autoDrain?: boolean;
   adapterTimeoutMs?: number;
+  observationClock?: ObservationClock;
 }
 const minute = 60_000;
+const observationGap = Symbol("RUNTIME_OBSERVATION_GAP");
 const encode = JSON.stringify;
 const decode = <T>(s: string) => JSON.parse(s) as T;
 function error(
@@ -116,11 +126,17 @@ export class ClosedBarRuntime {
   private closed = false;
   private timer: ReturnType<typeof setInterval> | undefined;
   private lastClock: number;
+  private readonly observation: RuntimeObservation;
+  private observationTimer: ReturnType<typeof setInterval> | undefined;
+  private observationStop: Promise<void> | null = null;
+  private observationStopFailed = false;
+  private pendingObservationGap = false;
   constructor(
     private readonly store: Store,
     private readonly options: Options = {},
   ) {
     this.now = options.now ?? Date.now;
+    this.observation = new RuntimeObservation(options.observationClock);
     this.epoch = options.epoch ?? randomUUID();
     this.lastClock = this.now();
     this.repository = new BarRepository(store.db);
@@ -183,6 +199,8 @@ export class ClosedBarRuntime {
     const s = this.stream(this.connectionEpoch!, instrumentId);
     if (!s) error("CLOSED_INSTRUMENT_NOT_SUBSCRIBED");
     const c = this.context(s.context_id);
+    if (!closedActionEvidenceCurrent(this.store.db, c))
+      error("CORPORATE_ACTION_CONTEXT_REVOKED");
     if (
       !["LIVE_CLOSED_BAR", "LIVE_TICK"].includes(
         assessCapability(c.capability, this.now()).level,
@@ -219,31 +237,47 @@ export class ClosedBarRuntime {
     };
   }
   availability() {
+    const observed = this.observation.healthy();
     const streams = this.connectionEpoch
       ? (this.store.db
           .prepare("SELECT * FROM closed_streams WHERE connection_epoch=?")
           .all(this.connectionEpoch) as Stream[])
       : [];
-    const instruments = streams.map((s) => ({
-      instrumentId: s.instrument_id,
-      liveEligible:
-        this.connected &&
-        Boolean(s.healthy) &&
-        ["LIVE_CLOSED_BAR", "LIVE_TICK"].includes(
-          assessCapability(this.context(s.context_id).capability, this.now())
-            .level,
-        ),
-      tickEligible:
-        this.connected &&
-        Boolean(s.healthy) &&
-        intrabarContractReason(this.context(s.context_id), this.now()) === null,
-      tickReason: !this.connected
-        ? "PROVIDER_DISCONNECTED"
-        : !s.healthy
-          ? s.reason
-          : intrabarContractReason(this.context(s.context_id), this.now()),
-      reason: s.reason,
-    }));
+    const instruments = streams.map((s) => {
+      const context = this.context(s.context_id);
+      const current = closedActionEvidenceCurrent(this.store.db, context);
+      return {
+        instrumentId: s.instrument_id,
+        liveEligible:
+          this.connected &&
+          observed &&
+          Boolean(s.healthy) &&
+          current &&
+          ["LIVE_CLOSED_BAR", "LIVE_TICK"].includes(
+            assessCapability(context.capability, this.now()).level,
+          ),
+        tickEligible:
+          this.connected &&
+          observed &&
+          Boolean(s.healthy) &&
+          current &&
+          intrabarContractReason(context, this.now()) === null,
+        tickReason: !observed
+          ? "RUNTIME_OBSERVATION_GAP"
+          : !current
+            ? "CORPORATE_ACTION_CONTEXT_REVOKED"
+            : !this.connected
+              ? "PROVIDER_DISCONNECTED"
+              : !s.healthy
+                ? s.reason
+                : intrabarContractReason(context, this.now()),
+        reason: !observed
+          ? "RUNTIME_OBSERVATION_GAP"
+          : current
+            ? s.reason
+            : "CORPORATE_ACTION_CONTEXT_REVOKED",
+      };
+    });
     const liveEligible = instruments.some((s) => s.liveEligible);
     return {
       configured: Boolean(this.options.adapter),
@@ -255,16 +289,73 @@ export class ClosedBarRuntime {
         : "LIVE_CAPABILITY_UNVERIFIED",
     };
   }
+  /** Server command boundaries call this outside their rollback-able transaction. */
+  checkObservation(): void {
+    this.observeProcess();
+  }
+  private observeProcess(): boolean {
+    if (this.closed) return false;
+    if (this.pendingObservationGap && !this.store.db.inTransaction) {
+      this.disconnect("RUNTIME_OBSERVATION_GAP");
+      this.pendingObservationGap = false;
+      return false;
+    }
+    if ((!this.connected && !this.opening) || this.closed) return false;
+    if (this.observation.observe()) return true;
+    this.pendingObservationGap = true;
+    try {
+      this.disconnect("RUNTIME_OBSERVATION_GAP");
+      if (!this.store.db.inTransaction) this.pendingObservationGap = false;
+    } finally {
+      // Fence first. Native cleanup must not keep a DB transaction open or permit
+      // a replacement connection while an uncancellable stop is still pending.
+      if (this.options.adapter && !this.observationStop) {
+        const task = Promise.resolve().then(() => this.options.adapter!.stop());
+        this.observationStop = task;
+        void task.then(
+          () => {
+            this.observationStop = null;
+          },
+          () => {
+            this.observationStop = null;
+            this.observationStopFailed = true;
+          },
+        );
+      }
+    }
+    return false;
+  }
+  private startObservation(): void {
+    this.observation.reset();
+    if (this.observationTimer) clearInterval(this.observationTimer);
+    // Also run during asynchronous SDK startup; waiting on IO is not itself a gap.
+    this.observationTimer = setInterval(() => {
+      try {
+        this.observeProcess();
+      } catch {
+        /* Remain fenced after a persistence failure. */
+      }
+    }, 1000);
+    this.observationTimer.unref();
+  }
   async start(): Promise<void> {
     if (this.closed) throw new Error("CLOSED_RUNTIME_STOPPED");
-    if (this.connected) return;
+    this.checkObservation();
+    if (this.connected) {
+      this.observeProcess();
+      if (this.connected) return;
+    }
+    if (this.observationStop) throw new Error("ADAPTER_STOP_IN_FLIGHT");
+    if (this.observationStopFailed)
+      throw new Error("ADAPTER_STOP_FAILED_RESTART_REQUIRED");
     if (!this.options.adapter) return;
     if (this.startPending || this.subscriptionNativePending || this.opening)
       throw new Error("ADAPTER_START_IN_FLIGHT");
     this.startPending = true;
     this.opening = true;
+    this.startObservation();
     const assertOpening = () => {
-      if (this.closed || !this.opening)
+      if (this.closed || !this.opening || !this.observeProcess())
         throw new Error("ADAPTER_START_CANCELLED");
     };
     const operation = (async () => {
@@ -286,6 +377,7 @@ export class ClosedBarRuntime {
       this.store.transaction(() => {
         this.store.db.prepare("DELETE FROM closed_sources").run();
         for (const c of contexts) {
+          assertClosedActionEvidenceCurrent(this.store.db, c);
           const existing = this.store.instrument(c.instrument.id);
           this.store.db
             .prepare(
@@ -326,7 +418,7 @@ export class ClosedBarRuntime {
     })().catch(async (cause) => {
       // A timeout cancels waiting, not the native operation. Late start success is cleaned up here.
       try {
-        await this.options.adapter!.stop();
+        await (this.observationStop ?? this.options.adapter!.stop());
       } catch {
         /* Preserve the startup failure. */
       }
@@ -352,10 +444,17 @@ export class ClosedBarRuntime {
       this.subscriptionKey = "[]";
       if (this.options.autoDrain !== false) this.drain();
       this.syncSubscriptions();
-    } catch {
+    } catch (cause) {
       this.opening = false;
-      if (!this.closed) this.disconnect("ADAPTER_START_FAILED");
-      throw new Error("ADAPTER_START_FAILED");
+      const code =
+        cause &&
+        typeof cause === "object" &&
+        "code" in cause &&
+        cause.code === "LONGBRIDGE_SDK_LOAD_FAILED"
+          ? "LONGBRIDGE_SDK_LOAD_FAILED"
+          : "ADAPTER_START_FAILED";
+      if (!this.closed) this.disconnect(code);
+      throw Object.assign(new Error(code), { code });
     }
   }
   /** Reconcile only after the synchronous transaction stack commits. Provider calls never hold a DB lock. */
@@ -445,6 +544,7 @@ export class ClosedBarRuntime {
     )
       return;
     const receivedAt = this.now();
+    const observed = this.observeProcess();
     if (!Number.isSafeInteger(receivedAt) || receivedAt < this.lastClock) {
       this.disconnect("SERVER_CLOCK_REGRESSED");
       return;
@@ -467,7 +567,7 @@ export class ClosedBarRuntime {
         this.pauseStream(stream, "INGRESS_BACKLOG_LIMIT", receivedAt);
         return;
       }
-      this.store.db
+      const inserted = this.store.db
         .prepare(
           "INSERT INTO closed_receipts(owner_epoch,connection_epoch,instrument_id,received_at,kind,payload_hash,payload_json) VALUES(?,?,?,?,?,?,?)",
         )
@@ -480,6 +580,14 @@ export class ClosedBarRuntime {
           closedHash(value),
           payload,
         );
+      if (!observed)
+        this.store.db
+          .prepare("INSERT INTO closed_receipt_results VALUES(?,?,?)")
+          .run(
+            inserted.lastInsertRowid,
+            "OBSERVATION_GAP_HISTORY_ONLY",
+            this.now(),
+          );
     });
     if (this.connected && this.options.autoDrain !== false) this.drain();
   }
@@ -542,6 +650,28 @@ export class ClosedBarRuntime {
       .filter((b) => b.period === "1m");
   }
   private accept(row: Row, raw: Input, receiptSeq: number | null = null): void {
+    if (!["BAR", "TICK", "REFERENCE"].includes(raw.type)) {
+      this.acceptObserved(row, raw, receiptSeq);
+      return;
+    }
+    if (!this.observeProcess()) return;
+    try {
+      this.store.transaction(() => {
+        this.acceptObserved(row, raw, receiptSeq);
+        // A pause in the same synchronous decision stack must roll back even a
+        // transition whose SQL writes already ran inside this savepoint.
+        if (!this.observation.healthy()) throw observationGap;
+      });
+    } catch (cause) {
+      if (cause !== observationGap) throw cause;
+      this.observeProcess();
+    }
+  }
+  private acceptObserved(
+    row: Row,
+    raw: Input,
+    receiptSeq: number | null,
+  ): void {
     const p = this.store.plan(row.plan_id);
     if (p.attemptId !== row.attempt_id || p.version !== row.plan_version) {
       this.store.db
@@ -697,6 +827,7 @@ export class ClosedBarRuntime {
         capability: assessCapability(c.capability, now).level,
         dataHealthy:
           Boolean(stream.healthy) &&
+          closedActionEvidenceCurrent(this.store.db, c) &&
           !newerUnalignedQuote &&
           this.connected &&
           row.connection_epoch === this.connectionEpoch,
@@ -729,6 +860,11 @@ export class ClosedBarRuntime {
         ...reduced.events,
       ];
     const serialized = encode(input);
+    if (
+      ["BAR", "TICK", "REFERENCE"].includes(raw.type) &&
+      !this.observation.healthy()
+    )
+      throw observationGap;
     this.store.db
       .prepare("INSERT INTO closed_inputs VALUES(?,?,?,?,?,?,?,?)")
       .run(
@@ -827,6 +963,8 @@ export class ClosedBarRuntime {
     if (this.closed) return;
     this.connected = false;
     this.opening = false;
+    if (this.observationTimer) clearInterval(this.observationTimer);
+    this.observationTimer = undefined;
     this.store.transaction(() => {
       for (const s of this.store.db
         .prepare("SELECT * FROM closed_streams WHERE connection_epoch=?")
@@ -1076,6 +1214,16 @@ export class ClosedBarRuntime {
     )
       return "OLD_EPOCH_HISTORY_ONLY";
     const c = this.context(stream.context_id);
+    if (!closedActionEvidenceCurrent(this.store.db, c)) {
+      this.pauseStream(
+        stream,
+        "CORPORATE_ACTION_CONTEXT_REVOKED",
+        r.received_at,
+      );
+      return "ACTION_CONTEXT_REVOKED";
+    }
+    if (!stream.healthy)
+      this.pauseStream(stream, stream.reason ?? "DATA_NOT_HEALTHY", this.now());
     if (
       !["LIVE_CLOSED_BAR", "LIVE_TICK"].includes(
         assessCapability(c.capability, this.now()).level,
@@ -1411,6 +1559,7 @@ export class ClosedBarRuntime {
   }
   drain(): void {
     if (this.closed) return;
+    this.observeProcess();
     const at = this.now();
     if (!Number.isSafeInteger(at) || at < this.lastClock) {
       this.disconnect("SERVER_CLOCK_REGRESSED");
@@ -1419,25 +1568,35 @@ export class ClosedBarRuntime {
     this.lastClock = at;
     // Each ingress record is immutable. Processing outcome, cursors and all attempt effects are one transaction.
     for (;;) {
-      const did = this.store.transaction(() => {
-        if (this.now() < this.lastClock) {
-          this.disconnect("SERVER_CLOCK_REGRESSED");
-          return false;
-        }
-        this.lastClock = this.now();
-        const r = this.store.db
-          .prepare(
-            "SELECT * FROM closed_receipts WHERE owner_epoch=? AND seq NOT IN (SELECT seq FROM closed_receipt_results) ORDER BY seq LIMIT 1",
-          )
-          .get(this.epoch) as Receipt | undefined;
-        if (!r) return false;
-        this.preflight(r);
-        const status = this.process(r);
-        this.store.db
-          .prepare("INSERT INTO closed_receipt_results VALUES(?,?,?)")
-          .run(r.seq, status, this.now());
-        return true;
-      });
+      this.observeProcess();
+      let did: boolean;
+      try {
+        did = this.store.transaction(() => {
+          if (this.now() < this.lastClock) {
+            this.disconnect("SERVER_CLOCK_REGRESSED");
+            return false;
+          }
+          this.lastClock = this.now();
+          const r = this.store.db
+            .prepare(
+              "SELECT * FROM closed_receipts WHERE owner_epoch=? AND seq NOT IN (SELECT seq FROM closed_receipt_results) ORDER BY seq LIMIT 1",
+            )
+            .get(this.epoch) as Receipt | undefined;
+          if (!r) return false;
+          this.preflight(r);
+          const status = this.process(r);
+          this.store.db
+            .prepare("INSERT INTO closed_receipt_results VALUES(?,?,?)")
+            .run(r.seq, status, this.now());
+          if (this.connected && !this.observation.healthy())
+            throw observationGap;
+          return true;
+        });
+      } catch (cause) {
+        if (cause !== observationGap) throw cause;
+        this.observeProcess();
+        break;
+      }
       if (!did) break;
     }
     this.syncSubscriptions();
@@ -1447,185 +1606,198 @@ export class ClosedBarRuntime {
     command: { expectedVersion: number; expectedAttemptId: string | null },
     recovery?: { sourceAttemptId: string; expectedWatermark: number },
   ) {
-    const result = this.store.transaction(() => {
-      this.drain();
-      const now = this.now(),
-        p = this.store.plan(planId);
-      if (
-        p.version !== command.expectedVersion ||
-        p.attemptId !== command.expectedAttemptId
-      )
-        throw new ApiError(409, "ATTEMPT_CONFLICT", "计划或观察尝试已改变");
-      const c = this.currentContext(p.instrumentId),
-        stream = this.stream(this.connectionEpoch!, p.instrumentId)!;
-      if (!stream.healthy) error("DATA_NOT_HEALTHY");
-      if (p.researchHistoryId) error("HISTORICAL_RESEARCH_ONLY");
-      if (p.mode === "INTRABAR_CROSS") {
-        const reason = intrabarContractReason(c, now);
-        if (reason)
-          error(
-            reason,
-            "连续逐笔协议、原始序号及实际部署证据尚未核验，盘中模式不可启用",
-          );
-      }
-      if (p.sessionDate !== c.session.date) error("CLOSED_SESSION_MISMATCH");
-      if (!p.backgroundConfirmed || !p.reason.trim())
-        error("BACKGROUND_UNCONFIRMED");
-      if (!this.store.screeningSettings().current) error("RULES_UNCONFIRMED");
-      if (p.supportSnapshot?.providerContextId !== c.id)
-        error("PROVIDER_CONTEXT_REVISION_CHANGED");
-      if (
-        !p.supportSnapshot?.ready ||
-        this.store.supportRevisionReasons(p, now).length
-      )
-        error("SUPPORT_NOT_READY");
-      if (now >= Math.min(c.session.open + 60 * minute, c.session.close))
-        error("OUTSIDE_FIRST_HOUR");
-      const prior = this.rows()
-        .filter(
-          (r) =>
-            r.plan_id === planId &&
-            this.context(r.context_id).session.date === p.sessionDate,
-        )
-        .at(-1);
-      let source: Row | undefined;
-      if (recovery) {
+    // Commit gap invalidation before an activation/recovery error can roll back its own transaction.
+    this.observeProcess();
+    this.drain();
+    const activate = () =>
+      this.store.transaction(() => {
+        const now = this.now(),
+          p = this.store.plan(planId);
         if (
-          !prior ||
-          prior.attempt_id !== recovery.sourceAttemptId ||
-          prior.watermark !== recovery.expectedWatermark
+          p.version !== command.expectedVersion ||
+          p.attemptId !== command.expectedAttemptId
         )
-          throw new ApiError(
-            409,
-            "RECOVERY_SOURCE_CONFLICT",
-            "恢复来源或水位已改变",
-          );
-        source = prior;
-        const old = decode<AttemptState>(source.state_json);
+          throw new ApiError(409, "ATTEMPT_CONFLICT", "计划或观察尝试已改变");
+        const c = this.currentContext(p.instrumentId),
+          stream = this.stream(this.connectionEpoch!, p.instrumentId)!;
+        if (!stream.healthy) error("DATA_NOT_HEALTHY");
+        if (p.researchHistoryId) error("HISTORICAL_RESEARCH_ONLY");
+        if (p.mode === "INTRABAR_CROSS") {
+          const reason = intrabarContractReason(c, now);
+          if (reason)
+            error(
+              reason,
+              "连续逐笔协议、原始序号及实际部署证据尚未核验，盘中模式不可启用",
+            );
+        }
+        if (p.sessionDate !== c.session.date) error("CLOSED_SESSION_MISMATCH");
+        if (!p.backgroundConfirmed || !p.reason.trim())
+          error("BACKGROUND_UNCONFIRMED");
+        if (!this.store.screeningSettings().current) error("RULES_UNCONFIRMED");
+        if (p.supportSnapshot?.providerContextId !== c.id)
+          error("PROVIDER_CONTEXT_REVISION_CHANGED");
         if (
-          old.consumed ||
-          !["USER_PAUSED", "DATA_PAUSED", "DRAFT"].includes(p.status)
+          !p.supportSnapshot?.ready ||
+          this.store.supportRevisionReasons(p, now).length
         )
-          error("RECOVERY_UNAVAILABLE");
-      } else {
-        if (prior)
-          throw new ApiError(
-            409,
-            "RECOVERY_REQUIRED",
-            "本会话已有尝试，请显式新建恢复尝试",
-          );
-        if (now > c.session.open) {
-          if (p.mode === "INTRABAR_CROSS") {
-            const cursor = this.tickCursor(stream);
-            if (
-              !cursor ||
-              cursor.coverageFrom !== c.session.open ||
-              cursor.coverageThrough < now
-            )
-              error("SESSION_HISTORY_INCOMPLETE");
-            if (
-              this.tickTrades(stream).some((t) =>
-                new Decimal(t.price).lte(p.upper),
+          error("SUPPORT_NOT_READY");
+        if (now >= Math.min(c.session.open + 60 * minute, c.session.close))
+          error("OUTSIDE_FIRST_HOUR");
+        const prior = this.rows()
+          .filter(
+            (r) =>
+              r.plan_id === planId &&
+              this.context(r.context_id).session.date === p.sessionDate,
+          )
+          .at(-1);
+        let source: Row | undefined;
+        if (recovery) {
+          if (
+            !prior ||
+            prior.attempt_id !== recovery.sourceAttemptId ||
+            prior.watermark !== recovery.expectedWatermark
+          )
+            throw new ApiError(
+              409,
+              "RECOVERY_SOURCE_CONFLICT",
+              "恢复来源或水位已改变",
+            );
+          source = prior;
+          const old = decode<AttemptState>(source.state_json);
+          if (
+            old.consumed ||
+            !["USER_PAUSED", "DATA_PAUSED", "DRAFT"].includes(p.status)
+          )
+            error("RECOVERY_UNAVAILABLE");
+        } else {
+          if (prior)
+            throw new ApiError(
+              409,
+              "RECOVERY_REQUIRED",
+              "本会话已有尝试，请显式新建恢复尝试",
+            );
+          if (now > c.session.open) {
+            if (p.mode === "INTRABAR_CROSS") {
+              const cursor = this.tickCursor(stream);
+              if (
+                !cursor ||
+                cursor.coverageFrom !== c.session.open ||
+                cursor.coverageThrough < now
               )
-            )
-              error("EARLIER_RETEST_ALREADY_OBSERVED");
-          } else {
-            if (stream.from_at !== c.session.open || stream.through_at < now)
-              error("SESSION_HISTORY_INCOMPLETE");
-            if (
-              this.minutes(stream).some((b) => new Decimal(b.low).lte(p.upper))
-            )
-              error("EARLIER_RETEST_ALREADY_OBSERVED");
+                error("SESSION_HISTORY_INCOMPLETE");
+              if (
+                this.tickTrades(stream).some((t) =>
+                  new Decimal(t.price).lte(p.upper),
+                )
+              )
+                error("EARLIER_RETEST_ALREADY_OBSERVED");
+            } else {
+              if (stream.from_at !== c.session.open || stream.through_at < now)
+                error("SESSION_HISTORY_INCOMPLETE");
+              if (
+                this.minutes(stream).some((b) =>
+                  new Decimal(b.low).lte(p.upper),
+                )
+              )
+                error("EARLIER_RETEST_ALREADY_OBSERVED");
+            }
           }
         }
-      }
-      const activated = this.store.activate(
-        planId,
-        p.version,
-        now,
-        source
-          ? {
-              recovery: true,
-              expectedAttemptId: p.attemptId,
-              sourceAttemptId: source.attempt_id,
-            }
-          : undefined,
-      );
-      const plan = activated.plan;
-      const version = this.store.planVersion(plan);
-      const config: AttemptConfig = {
-        allowPausedCancellation: true,
-        allowFeedbackCorrections: true,
-        attemptId: plan.attemptId!,
-        planId,
-        planVersion: p.version,
-        sessionId: c.session.id,
-        sessionOpenAt: c.session.open,
-        sessionCloseAt: c.session.close,
-        activatedAt: Math.max(now, source?.watermark ?? now),
-        mode: p.mode,
-        lower: version.lower,
-        upper: version.upper,
-        stop: version.stop,
-        entryMin: version.entryMin,
-        entryMax: version.entryMax,
-        ...(version.chaseLimit?.enabled
-          ? {
-              chaseFromLowMax: chaseRatio(version),
-            }
-          : {}),
-        tick: c.instrument.tick,
-        previousDayClose: version.supportSnapshot!.reference.close!,
-        evidenceEpoch: randomUUID(),
-        template: source ? "RECOVERY" : "SESSION_FIRST",
-        preActivationEvidence: source ? "UNKNOWN" : "NO_TOUCH",
-      };
-      const state = createAttempt(config);
-      if (state.status !== "WAIT_RETEST")
-        error(state.reason ?? "CLOSED_ACTIVATION_BLOCKED");
-      const activationSeq = (
-        this.store.db
-          .prepare("SELECT COALESCE(MAX(seq),0) n FROM closed_receipts")
-          .get() as { n: number }
-      ).n;
-      this.store.db.prepare("UPDATE attempts SET json=? WHERE id=?").run(
-        encode({
-          kind: p.mode === "INTRABAR_CROSS" ? "LIVE_TICK" : "LIVE_CLOSED_BAR",
-          startedAt: now,
-          version: p.version,
-          approvedQuantity: plan.approvedQuantity,
-          evidenceEpoch: config.evidenceEpoch,
-          contextId: c.id,
-          template: config.template,
-          parentAttemptId: source?.attempt_id ?? null,
-        }),
-        plan.attemptId,
-      );
-      this.store.db
-        .prepare(
-          "INSERT INTO closed_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        )
-        .run(
-          plan.attemptId,
+        const activated = this.store.activate(
           planId,
           p.version,
-          this.epoch,
-          this.connectionEpoch,
-          c.id,
-          activationSeq,
-          encode(config),
-          encode(state),
-          "[]",
-          "RUNNING",
           now,
-          null,
-          source?.attempt_id ?? null,
-          now,
+          source
+            ? {
+                recovery: true,
+                expectedAttemptId: p.attemptId,
+                sourceAttemptId: source.attempt_id,
+              }
+            : undefined,
         );
-      return { ...activated, monitor: this.status(planId) };
-    });
-    this.syncSubscriptions();
-    return result;
+        const plan = activated.plan;
+        const version = this.store.planVersion(plan);
+        const config: AttemptConfig = {
+          allowPausedCancellation: true,
+          allowFeedbackCorrections: true,
+          attemptId: plan.attemptId!,
+          planId,
+          planVersion: p.version,
+          sessionId: c.session.id,
+          sessionOpenAt: c.session.open,
+          sessionCloseAt: c.session.close,
+          activatedAt: Math.max(now, source?.watermark ?? now),
+          mode: p.mode,
+          lower: version.lower,
+          upper: version.upper,
+          stop: version.stop,
+          entryMin: version.entryMin,
+          entryMax: version.entryMax,
+          ...(version.chaseLimit?.enabled
+            ? {
+                chaseFromLowMax: chaseRatio(version),
+              }
+            : {}),
+          tick: c.instrument.tick,
+          previousDayClose: version.supportSnapshot!.reference.close!,
+          evidenceEpoch: randomUUID(),
+          template: source ? "RECOVERY" : "SESSION_FIRST",
+          preActivationEvidence: source ? "UNKNOWN" : "NO_TOUCH",
+        };
+        const state = createAttempt(config);
+        if (state.status !== "WAIT_RETEST")
+          error(state.reason ?? "CLOSED_ACTIVATION_BLOCKED");
+        const activationSeq = (
+          this.store.db
+            .prepare("SELECT COALESCE(MAX(seq),0) n FROM closed_receipts")
+            .get() as { n: number }
+        ).n;
+        this.store.db.prepare("UPDATE attempts SET json=? WHERE id=?").run(
+          encode({
+            kind: p.mode === "INTRABAR_CROSS" ? "LIVE_TICK" : "LIVE_CLOSED_BAR",
+            startedAt: now,
+            version: p.version,
+            approvedQuantity: plan.approvedQuantity,
+            evidenceEpoch: config.evidenceEpoch,
+            contextId: c.id,
+            template: config.template,
+            parentAttemptId: source?.attempt_id ?? null,
+          }),
+          plan.attemptId,
+        );
+        this.store.db
+          .prepare(
+            "INSERT INTO closed_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+          )
+          .run(
+            plan.attemptId,
+            planId,
+            p.version,
+            this.epoch,
+            this.connectionEpoch,
+            c.id,
+            activationSeq,
+            encode(config),
+            encode(state),
+            "[]",
+            "RUNNING",
+            now,
+            null,
+            source?.attempt_id ?? null,
+            now,
+          );
+        if (!this.observation.healthy()) throw observationGap;
+        return { ...activated, monitor: this.status(planId) };
+      });
+    try {
+      const result = activate();
+      this.syncSubscriptions();
+      return result;
+    } catch (cause) {
+      if (cause !== observationGap) throw cause;
+      this.observeProcess();
+      error("RUNTIME_OBSERVATION_GAP");
+    }
   }
   flush(): void {
     if (this.closed) return;
@@ -1685,6 +1857,10 @@ export class ClosedBarRuntime {
           )
           .all(this.connectionEpoch) as Stream[]) {
           const c = this.context(s.context_id);
+          if (!closedActionEvidenceCurrent(this.store.db, c)) {
+            this.pauseStream(s, "CORPORATE_ACTION_CONTEXT_REVOKED", now);
+            continue;
+          }
           if (
             !["LIVE_CLOSED_BAR", "LIVE_TICK"].includes(
               assessCapability(c.capability, now).level,
@@ -1736,13 +1912,15 @@ export class ClosedBarRuntime {
       this.closed = true;
       this.connected = false;
       this.opening = false;
+      if (this.observationTimer) clearInterval(this.observationTimer);
+      this.observationTimer = undefined;
       if (this.timer) clearInterval(this.timer);
       this.timer = undefined;
       this.abort.abort();
       if (this.options.adapter)
         try {
           await withDeadline(
-            () => this.options.adapter!.stop(),
+            () => this.observationStop ?? this.options.adapter!.stop(),
             this.options.adapterTimeoutMs ?? 2000,
           );
         } catch {

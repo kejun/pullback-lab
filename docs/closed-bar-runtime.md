@@ -43,3 +43,33 @@ Longbridge 适配器代码已实现，但还没有真实权限/地区/单位/最
 ## 盘中运行链
 
 受协议证据门控的持久盘中实现见 [盘中运行契约](intrabar-runtime.md)。实际 Longbridge SDK 连续性仍未通过验收，生产盘中模式继续关闭。
+
+## Process observation interruptions
+
+The formal runtime has a separate process-observation clock pair (wall time and
+monotonic time), independent of the market event/replay clock. A 1-second pulse
+runs from adapter startup until disconnection. More than 5 seconds between
+observations on either clock, any clock regression/non-finite sample, or more
+than 1 second of disagreement invalidates the connection with
+`RUNTIME_OBSERVATION_GAP`. This is conservative evidence of an observation gap;
+it does not diagnose OS sleep. Platforms whose monotonic clock excludes suspend
+are still protected by wall time. System clock jumps also require revalidation.
+
+Receive, drain, activation and decision persistence check this boundary before
+acting. A gap during synchronous risk/reducer/persistence work rolls back that
+transition before pausing the old attempt, so no entry, consumed flag or reserve
+change survives. The first callback that detects a gap keeps its actual receipt
+time as `OBSERVATION_GAP_HISTORY_ONLY`; it cannot become a live entry even if the
+bar was received within the usual 30-second close tolerance. Read-only status
+polls never advance the heartbeat. Nothing can execute while the OS has actually
+suspended the process: the protection applies when execution resumes, before the
+next formal decision.
+
+The old attempt remains `DATA_PAUSED`. Provider cleanup is requested, and a new
+connection is blocked while native cleanup is unresolved; cleanup failure
+requires a process restart. Re-establish the server-side adapter (normally by
+restarting the app), inspect data health, then explicitly create a recovery
+attempt through the existing monitor controls. No automatic continuation or
+backfilled first-touch trigger is allowed. The tests inject independent clocks
+and a 20-second interruption, including inside risk evaluation and SQL writes;
+these are deterministic failure-injection tests, not an actual host sleep drill.

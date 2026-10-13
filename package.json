@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "market:check": "node --import tsx scripts/check-production-market.ts",
     "probe": "node --import tsx scripts/probe.ts",
     "actions:import": "node --import tsx scripts/import-actions.ts",
     "backup": "node --import tsx scripts/backup.ts",
