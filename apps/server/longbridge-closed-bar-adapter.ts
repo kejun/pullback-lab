@@ -1,14 +1,5 @@
 import { assertClosedActionEvidenceCurrent } from "./closed-action-binding.js";
-import {
-  Config,
-  Period,
-  PushCandlestickMode,
-  QuoteContext,
-  SubType,
-  TradeSession,
-  TradeSessions,
-  TradeStatus,
-} from "longbridge";
+import type { QuoteContext } from "longbridge";
 import type Database from "better-sqlite3";
 import { assessCapability } from "../../packages/market-data/capabilities.js";
 import { withDeadline } from "../../packages/market-data/deadline.js";
@@ -80,6 +71,7 @@ export class LongbridgeClosedBarAdapter implements ClosedBarAdapter {
   private lastInvocation = -Infinity;
   private generation = 0;
   private lastClock: number;
+  private sdk: typeof import("longbridge") | undefined;
   constructor(private readonly options: LongbridgeClosedOptions) {
     this.now = options.now ?? Date.now;
     this.timeout = options.requestTimeoutMs ?? 20_000;
@@ -90,6 +82,11 @@ export class LongbridgeClosedBarAdapter implements ClosedBarAdapter {
     )
       fail("LONGBRIDGE_TIMEOUT_INVALID");
     this.lastClock = this.now();
+    // SDK 5.2.0 CN aggregation accumulates native volume in 100-share units.
+    // This transport currently implements native SHARE only; a boolean evidence
+    // assertion cannot override the known endpoint-specific unit mismatch.
+    if (options.contexts.some((context) => context.instrument.market === "CN"))
+      fail("LONGBRIDGE_CN_MINUTE_UNIT_UNSUPPORTED");
     // The SDK cannot attest ordered/continuous tick delivery. Never inherit LIVE_TICK.
     this.evidence = options.contexts.map((context) =>
       validateClosedContext(
@@ -308,7 +305,19 @@ export class LongbridgeClosedBarAdapter implements ClosedBarAdapter {
     let opening: Connection | null = null;
     try {
       this.nativePending++;
-      const pending = Promise.resolve().then(this.options.contextFactory);
+      const pending = Promise.resolve().then(async () => {
+        // Native binaries are irrelevant to default-off/static checks. Load only
+        // after admission, within the same timeout/generation-owned operation.
+        try {
+          this.sdk = await import("longbridge");
+        } catch {
+          throw Object.assign(new Error("LONGBRIDGE_SDK_LOAD_FAILED"), {
+            code: "LONGBRIDGE_SDK_LOAD_FAILED",
+          });
+        }
+        if (generation !== this.generation) fail("LONGBRIDGE_START_CANCELLED");
+        return this.options.contextFactory();
+      });
       void pending.then(
         (port) => {
           this.nativePending--;
@@ -348,9 +357,13 @@ export class LongbridgeClosedBarAdapter implements ClosedBarAdapter {
           if (!c.active.has(event.symbol)) return;
           this.checkEvidence();
           const data = event.data;
-          if (data.period !== Period.Min_1 || data.isConfirmed !== true) return;
+          if (
+            data.period !== this.sdk!.Period.Min_1 ||
+            data.isConfirmed !== true
+          )
+            return;
           const b = data.candlestick;
-          if (b.tradeSession !== TradeSession.Intraday) return;
+          if (b.tradeSession !== this.sdk!.TradeSession.Intraday) return;
           const context = this.bySymbol.get(event.symbol)!;
           const start = b.timestamp.getTime();
           if (!Number.isSafeInteger(b.volume) || b.volume < 0)
@@ -392,8 +405,8 @@ export class LongbridgeClosedBarAdapter implements ClosedBarAdapter {
           if (!c.active.has(event.symbol)) return;
           this.checkEvidence();
           const q = event.data;
-          if (q.tradeSession !== TradeSession.Intraday) return;
-          if (q.tradeStatus !== TradeStatus.Normal)
+          if (q.tradeSession !== this.sdk!.TradeSession.Intraday) return;
+          if (q.tradeStatus !== this.sdk!.TradeStatus.Normal)
             fail("LONGBRIDGE_SECURITY_NOT_TRADING");
           const context = this.bySymbol.get(event.symbol)!;
           const at = q.timestamp.getTime(),
@@ -420,10 +433,19 @@ export class LongbridgeClosedBarAdapter implements ClosedBarAdapter {
           this.disconnect(c, "LONGBRIDGE_QUOTE_CONTRACT_INVALID");
         }
       });
-    } catch {
+    } catch (cause) {
       this.generation++;
       if (opening) await this.cleanup(opening);
       this.connection = null;
+      if (
+        cause &&
+        typeof cause === "object" &&
+        "code" in cause &&
+        cause.code === "LONGBRIDGE_SDK_LOAD_FAILED"
+      )
+        throw Object.assign(new Error("LONGBRIDGE_SDK_LOAD_FAILED"), {
+          code: "LONGBRIDGE_SDK_LOAD_FAILED",
+        });
       throw new Error("LONGBRIDGE_START_FAILED");
     } finally {
       this.starting = false;
@@ -463,7 +485,8 @@ export class LongbridgeClosedBarAdapter implements ClosedBarAdapter {
         requests.push(
           this.call(
             c,
-            () => c.port.unsubscribeCandlesticks(symbol, Period.Min_1),
+            () =>
+              c.port.unsubscribeCandlesticks(symbol, this.sdk!.Period.Min_1),
             true,
           ),
         );
@@ -471,7 +494,7 @@ export class LongbridgeClosedBarAdapter implements ClosedBarAdapter {
         requests.push(
           this.call(
             c,
-            () => c.port.unsubscribe(attempted, [SubType.Quote]),
+            () => c.port.unsubscribe(attempted, [this.sdk!.SubType.Quote]),
             true,
           ),
         );
@@ -513,10 +536,13 @@ export class LongbridgeClosedBarAdapter implements ClosedBarAdapter {
         if (!symbols.includes(symbol)) {
           connection.active.delete(symbol);
           await this.call(connection, () =>
-            connection.port.unsubscribeCandlesticks(symbol, Period.Min_1),
+            connection.port.unsubscribeCandlesticks(
+              symbol,
+              this.sdk!.Period.Min_1,
+            ),
           );
           await this.call(connection, () =>
-            connection.port.unsubscribe([symbol], [SubType.Quote]),
+            connection.port.unsubscribe([symbol], [this.sdk!.SubType.Quote]),
           );
           connection.attempted.delete(symbol);
         }
@@ -527,7 +553,7 @@ export class LongbridgeClosedBarAdapter implements ClosedBarAdapter {
           // is admitted now; failure fences the connection and never retries old opportunities.
           connection.active.add(symbol);
           await this.call(connection, () =>
-            connection.port.subscribe([symbol], [SubType.Quote]),
+            connection.port.subscribe([symbol], [this.sdk!.SubType.Quote]),
           );
           if (connection.stopped) fail("LONGBRIDGE_CONNECTION_STOPPED");
           // Quote is ready before subscribing candles.
@@ -535,8 +561,8 @@ export class LongbridgeClosedBarAdapter implements ClosedBarAdapter {
           await this.call(connection, () =>
             connection.port.subscribeCandlesticks(
               symbol,
-              Period.Min_1,
-              TradeSessions.Intraday,
+              this.sdk!.Period.Min_1,
+              this.sdk!.TradeSessions.Intraday,
             ),
           );
           if (connection.stopped) fail("LONGBRIDGE_CONNECTION_STOPPED");
@@ -573,7 +599,7 @@ export function longbridgeClosedBarFactory(
       quota,
       db: store.db,
       now,
-      contextFactory: () => {
+      contextFactory: async () => {
         const {
           LONGBRIDGE_APP_KEY: key,
           LONGBRIDGE_APP_SECRET: secret,
@@ -581,6 +607,8 @@ export function longbridgeClosedBarFactory(
         } = env;
         if (!key?.trim() || !secret?.trim() || !token?.trim())
           fail("LONGBRIDGE_CREDENTIALS_MISSING");
+        const { Config, PushCandlestickMode, QuoteContext } =
+          await import("longbridge");
         const config = Config.fromApikey(key!, secret!, token!, {
           enablePrintQuotePackages: false,
           enableOvernight: false,

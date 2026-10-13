@@ -23,6 +23,7 @@ afterEach(() => {
 import type { Market } from "../../../packages/contracts/index.js";
 import {
   resolveSession,
+  localSessionTime,
   type CalendarDay,
 } from "../../../packages/market-data/calendar.js";
 import { Store } from "../store.js";
@@ -33,7 +34,10 @@ import {
   type LongbridgeContextInput,
 } from "../longbridge-context-builder.js";
 import { prepareProductionMarket } from "../production-market.js";
-import { LONGBRIDGE_SOURCE } from "../longbridge-closed-bar-adapter.js";
+import {
+  LONGBRIDGE_SOURCE,
+  LongbridgeClosedBarAdapter,
+} from "../longbridge-closed-bar-adapter.js";
 import { ContractAdapter } from "./closed-bar-fixture.js";
 
 const quota = {
@@ -244,13 +248,13 @@ describe("audited production history assembly", () => {
     [
       "bad historical close",
       (i: LongbridgeContextInput) => {
-        i.rawDaily[0].end -= 60000;
+        i.rawDaily[0].end! -= 60000;
       },
     ],
     [
       "premature final",
       (i: LongbridgeContextInput) => {
-        i.rawDaily[0].receivedAt = i.rawDaily[0].end - 1;
+        i.rawDaily[0].receivedAt = i.rawDaily[0].end! - 1;
       },
     ],
     [
@@ -821,4 +825,154 @@ it("keeps withdrawn actions revoked through later snapshots and allows explicit 
   } finally {
     store.close();
   }
+});
+
+it.each(["US", "CN"] as const)(
+  "maps explicitly audited %s local-midnight daily labels by each historical calendar and retains raw timestamps",
+  (market) => {
+    const { input, now } = fixture(market);
+    const canonical = buildLongbridgeContext(input, now);
+    input.dailyTimestampAnchor = "MARKET_LOCAL_MIDNIGHT";
+    for (const raw of input.rawDaily) {
+      const day = input.calendarDays.find(
+        (day) => day.date === raw.id.split(":").at(-1),
+      )!;
+      const resolved = resolveSession([day], market, day.date, now);
+      if (!resolved.ok || !resolved.session) throw new Error("fixture session");
+      raw.start = localSessionTime(
+        day.date,
+        "00:00",
+        resolved.session.timezone,
+      );
+      delete raw.end;
+    }
+    const mapped = buildLongbridgeContext(input, now);
+    expect(mapped.daily.map((b) => [b.time, b.open, b.volume])).toEqual(
+      canonical.daily.map((b) => [b.time, b.open, b.volume]),
+    );
+    const first = mapped.daily[0] as unknown as {
+      providerTimestamp: number;
+      raw: { providerTimestamp: number; providerTimestampAnchor: string };
+    };
+    expect(first.providerTimestamp).toBe(input.rawDaily[0].start);
+    expect(first.raw).toMatchObject({
+      providerTimestamp: input.rawDaily[0].start,
+      providerTimestampAnchor: "MARKET_LOCAL_MIDNIGHT",
+    });
+    expect(mapped.dailyHistoryId).not.toBe(canonical.dailyHistoryId);
+    input.rawDaily[0].start += 3600000;
+    expect(() => buildLongbridgeContext(input, now)).toThrow(
+      "HISTORY_RAW_BAR_INVALID",
+    );
+  },
+);
+
+it("rejects CN native minute units even if a server context incorrectly asserts verified SHARE", () => {
+  const { input, now } = fixture("CN");
+  const store = new Store(":memory:");
+  try {
+    store.putInstrument({
+      instrument: input.instrument,
+      manual: false,
+      note: "isolated",
+      tags: [],
+    });
+    expect(() =>
+      prepareProductionMarket(
+        { histories: [input], quota },
+        { PULLBACK_CLOSED_BAR_MODE: "longbridge-close-confirm" },
+        () => now,
+      ),
+    ).toThrow("LONGBRIDGE_CN_MINUTE_UNIT_UNSUPPORTED");
+    const contextFactory = vi.fn();
+    expect(
+      () =>
+        new LongbridgeClosedBarAdapter({
+          contexts: [buildLongbridgeContext(input, now)],
+          quota,
+          db: store.db,
+          contextFactory,
+          now: () => now,
+        }),
+    ).toThrow("LONGBRIDGE_CN_MINUTE_UNIT_UNSUPPORTED");
+    expect(contextFactory).not.toHaveBeenCalled();
+  } finally {
+    store.close();
+  }
+});
+
+it("static off and unconfigured checks do not import an unavailable native SDK", () => {
+  const hook =
+    "import { registerHooks } from 'node:module'; registerHooks({ resolve(specifier, context, next) { if (specifier === 'longbridge') throw new Error('NATIVE_SDK_MUST_NOT_LOAD'); return next(specifier, context); } });";
+  for (const mode of ["off", "longbridge-close-confirm"]) {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "--import",
+        "data:text/javascript," + encodeURIComponent(hook),
+        "scripts/check-production-market.ts",
+      ],
+      {
+        encoding: "utf8",
+        timeout: 10000,
+        env: {
+          ...process.env,
+          PULLBACK_CLOSED_BAR_MODE: mode,
+          PULLBACK_DEMO: "0",
+          PULLBACK_MARKET_WORKER: "0",
+        },
+      },
+    );
+    expect(result.status).toBe(mode === "off" ? 0 : 2);
+    expect(result.stdout + result.stderr).not.toContain(
+      "NATIVE_SDK_MUST_NOT_LOAD",
+    );
+    expect(result.stdout + result.stderr).toContain(
+      mode === "off"
+        ? "CONFIGURATION_VALID"
+        : "AUDITED_SERVER_CONFIGURATION_REQUIRED",
+    );
+  }
+});
+
+it("reports only a safe SDK load failure through the actual runtime without calling the context factory", () => {
+  const hook =
+    "import { registerHooks } from 'node:module'; registerHooks({ resolve(specifier, context, next) { if (specifier === 'longbridge') throw new Error('private-loader-path-and-token'); return next(specifier, context); } });";
+  const code = `
+    import { ContractAdapter } from './apps/server/tests/closed-bar-fixture.ts';
+    import { LongbridgeClosedBarAdapter, LONGBRIDGE_SOURCE } from './apps/server/longbridge-closed-bar-adapter.ts';
+    import { ClosedBarRuntime } from './apps/server/closed-bar-runtime.ts';
+    import { Store } from './apps/server/store.ts';
+    const c = new ContractAdapter().context;
+    c.source = c.capability.source = LONGBRIDGE_SOURCE;
+    const store = new Store(':memory:');
+    store.putInstrument({ instrument: c.instrument, manual: false, note: 'isolated', tags: [] });
+    const adapter = new LongbridgeClosedBarAdapter({ contexts: [c], db: store.db, now: () => c.basisKnownAt, quota: { verified:true, researchSymbols:100, simultaneousSubscriptions:10, monthlyUniqueSymbols:1000, requestsPerSecond:1 }, contextFactory: () => { console.log('FACTORY_MUST_NOT_RUN'); throw new Error('factory'); } });
+    const runner = new ClosedBarRuntime(store, { adapter, now: () => c.basisKnownAt });
+    try { await runner.start(); process.exitCode=1; } catch(error) { console.log(JSON.stringify({ code:error.code, message:error.message })); }
+    await runner.stop(); store.close();
+  `;
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "--import",
+      "data:text/javascript," + encodeURIComponent(hook),
+      "--input-type=module",
+      "-e",
+      code,
+    ],
+    { encoding: "utf8", timeout: 10000 },
+  );
+  expect(result.status, result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual({
+    code: "LONGBRIDGE_SDK_LOAD_FAILED",
+    message: "LONGBRIDGE_SDK_LOAD_FAILED",
+  });
+  expect(result.stdout + result.stderr).not.toMatch(
+    /FACTORY_MUST_NOT_RUN|private-loader-path-and-token/,
+  );
 });

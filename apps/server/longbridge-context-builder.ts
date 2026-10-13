@@ -6,6 +6,7 @@ import {
 } from "../../packages/market-data/adjustments.js";
 import {
   resolveSession,
+  localSessionTime,
   type CalendarDay,
   type MarketSession,
 } from "../../packages/market-data/calendar.js";
@@ -33,7 +34,9 @@ export interface LongbridgeContextInput {
   basisDate: string;
   /** Every civil date, including closures, from historyStartDate through basisDate. Never extrapolate today's hours. */
   calendarDays: readonly CalendarDay[];
-  rawDaily: readonly RawBar[];
+  /** Explicit audited mapping; canonical intervals are the backwards-compatible default, never inferred from a timestamp. */
+  dailyTimestampAnchor?: "SESSION_INTERVAL" | "MARKET_LOCAL_MIDNIGHT";
+  rawDaily: readonly (Omit<RawBar, "end"> & { end?: number })[];
   adjustments: AdjustmentDataset;
 }
 export class ProductionMarketError extends Error {
@@ -58,6 +61,9 @@ export function buildLongbridgeContext(
   now: number,
 ): ClosedBarContext {
   const c = structuredClone(input);
+  const anchor = c.dailyTimestampAnchor ?? "SESSION_INTERVAL";
+  if (!["SESSION_INTERVAL", "MARKET_LOCAL_MIDNIGHT"].includes(anchor))
+    fail("HISTORY_TIMESTAMP_ANCHOR_UNVERIFIED");
   const actionVersion = c.actionEvidenceVersion ?? null;
   if (
     actionVersion !== null &&
@@ -149,7 +155,25 @@ export function buildLongbridgeContext(
       seen.add(raw.sessionId);
       ids.add(raw.id);
       try {
-        return normalizeBar(raw, session!);
+        if (
+          anchor === "MARKET_LOCAL_MIDNIGHT" &&
+          (raw.start !==
+            localSessionTime(session!.date, "00:00", session!.timezone) ||
+            (raw.end !== undefined && raw.end !== session!.close))
+        )
+          fail("HISTORY_TIMESTAMP_ANCHOR_MISMATCH");
+        const interval =
+          anchor === "MARKET_LOCAL_MIDNIGHT"
+            ? { ...raw, start: session!.open, end: session!.close }
+            : { ...raw, end: raw.end! };
+        return {
+          ...normalizeBar(interval, session!),
+          // Preserve the original label as provenance. Canonical start/end come
+          // only from this date's explicit calendar, never today's hours.
+          providerTimestamp: raw.start,
+          providerTimestampAnchor: anchor,
+          ...(raw.end !== undefined ? { providerEnd: raw.end } : {}),
+        };
       } catch {
         return fail("HISTORY_RAW_BAR_INVALID");
       }

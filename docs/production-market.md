@@ -52,7 +52,11 @@ PULLBACK_CLOSED_BAR_MODE=longbridge-close-confirm npm run market:check
 
 构建器从 `historyStartDate` 到目标 `basisDate` 逐个自然日要求显式日历，周末和休市也不能靠默认推断。按真实知识截止选版本，拒绝同知识时点冲突；每个此前开市会话必须恰有一根完整原始日线，至少250根。未知停牌/缺日会阻断，不能补造零量蜡烛。历史半日市、DST、中国午休和收盘集合竞价使用各自日期的原始会话记录，绝不外推今天的时段。
 
-每根线须精确对应证券/来源/会话、RAW 和已核验 SHARE 单位、实际收盘起止、最终状态及接收时间；不同接口或市场的量不能统一猜为“股”。`normalizeBar` 重验价格和整数原始股数，再由既有 split-only 核心调整；原始数据、成交额和反向调整后的精确分数股数均保留。不能为了匹配供应商的整数前复权量而舍入。
+每根线须精确对应证券/来源/会话、RAW 和已核验 SHARE 单位、实际收盘区间、完成状态及接收时间；不同接口或市场的量不能统一猜为“股”。`normalizeBar` 重验价格和整数原始股数，再由既有 split-only 核心调整；原始数据、成交额和反向调整后的精确分数股数均保留。不能为了匹配供应商的整数前复权量而舍入。
+
+SDK 日线的当地午夜标签不是开盘或确认时间。已审核该端点锚点时，服务器输入可显式选 `dailyTimestampAnchor: MARKET_LOCAL_MIDNIGHT`；构建器核对每个标签确为该历史市场日期的当地午夜，再按该日已审核日历生成开盘/收盘区间（包含DST和半日市）。原始标签作为 `providerTimestamp` / `providerTimestampAnchor` 保留在日线及其raw快照，参与上下文哈希；没有提供end时只按该日历推导，给了冲突end则拒绝。默认 `SESSION_INTERVAL` 仍只接受已有明确规范化区间，不猜测午夜映射，未知锚点也拒绝。单位、完成状态及实际收到时间仍独立核验，时间映射不授予这些能力。
+
+当前SDK5.2.0的 CN 实时累积量与原生 SHARE 转换存在已知矛盾，生产预检及adapter均明确拒绝 `LONGBRIDGE_CN_MINUTE_UNIT_UNSUPPORTED`；不能靠unitsVerified布尔值越过。历史日线机械构建仍可独立验证，CN真实研究接入和端点转换尚未完成。US CLOSE_CONFIRM 也须先审计 SDK 客户端confirmed、重连缺回补等限制，不能仅凭一次成功采样放行。详见[锁定SDK来源差异](longbridge-closed-adapter.md#锁定520实现与网页协议的区别)。
 
 盘前必须能够准备首分钟观察。新的 `adjustForScheduledSession` 将当时已知的资料投影到显式目标会话开盘基准，真实 `asOf` 不向未来移动；已公告且已收到、在开盘生效的拆分可应用，未来收到/未来发布的修订不能参与。原 `adjustForSplits` 的历史审计契约仍拒绝未来基准。公司行动覆盖须到目标收盘；已知日线内部或目标会话盘中拆分会阻断。覆盖声明是审计输入，不证明未来不会出现新事件，后续来源变化仍需使旧上下文/计划失效。
 
@@ -83,3 +87,9 @@ PULLBACK_CLOSED_BAR_MODE=longbridge-close-confirm npm run market:check
 所有研究/资格/激活/恢复/接收决策/启动路径按数据库最新sequence读取版本，不按当前墙钟回退。因而同毫秒更新、进程重启或主机时钟回退都不能复活旧静态配置。新的显式服务器审计绑定会改变context哈希；生产装配还要求截至真实知识时点，本地固定版本内影响本窗口的行动事实、比例与受审计输入逐项一致，且不得继续使用撤回的行动。人工导入只覆盖已发生的时间，外部受审计覆盖可以延伸至目标收盘；两者覆盖对象不必相等，不能借此抬高人工导入的知识截止。启动代码绝不能自动把“数据库最新version”填入旧context。新的人工COMPLETE声明也只会撤销，不能自行授能。重新审查资料、构造新上下文、保存新计划版本并显式恢复后才能继续。
 
 `market:check` 是无数据库的静态检查；持久撤销代际、实际研究池与累计额度须在真正应用装配时再次校验，不能以静态检查有效代替运行资格。
+
+## Native SDK 平台兼容
+
+默认关闭和 `market:check` 不加载 Longbridge 原生模块。准入后的start才在既有超时/代际所有权内异步加载；加载失败只输出安全代码 `LONGBRIDGE_SDK_LOAD_FAILED`，不回显native错误、路径或秘密。
+
+本批CI发现：锁定5.2.0 Linux x64二进制引用GLIBC_2.39，原Bookworm镜像的运行库不足。容器双阶段改用[官方Node24提供的trixie-slim](https://github.com/nodejs/docker-node/blob/main/versions.json)，最终镜像增加无凭据、无网络的SDK纯import检查。容器CI验证不代替用户Mac架构、SQLite与SDK的本机检查。

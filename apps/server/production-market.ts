@@ -53,6 +53,8 @@ export function prepareProductionMarket(
     new Set(contexts.map((c) => c.instrument.symbol)).size !== contexts.length
   )
     throw new ProductionMarketError("CLOSED_SUBSCRIPTION_LIMIT");
+  if (contexts.some((context) => context.instrument.market === "CN"))
+    throw new ProductionMarketError("LONGBRIDGE_CN_MINUTE_UNIT_UNSUPPORTED");
   const quota = structuredClone(reviewed.quota);
   const check = reserveQuota(
     {

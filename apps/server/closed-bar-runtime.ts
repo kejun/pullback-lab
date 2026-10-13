@@ -444,10 +444,17 @@ export class ClosedBarRuntime {
       this.subscriptionKey = "[]";
       if (this.options.autoDrain !== false) this.drain();
       this.syncSubscriptions();
-    } catch {
+    } catch (cause) {
       this.opening = false;
-      if (!this.closed) this.disconnect("ADAPTER_START_FAILED");
-      throw new Error("ADAPTER_START_FAILED");
+      const code =
+        cause &&
+        typeof cause === "object" &&
+        "code" in cause &&
+        cause.code === "LONGBRIDGE_SDK_LOAD_FAILED"
+          ? "LONGBRIDGE_SDK_LOAD_FAILED"
+          : "ADAPTER_START_FAILED";
+      if (!this.closed) this.disconnect(code);
+      throw Object.assign(new Error(code), { code });
     }
   }
   /** Reconcile only after the synchronous transaction stack commits. Provider calls never hold a DB lock. */
