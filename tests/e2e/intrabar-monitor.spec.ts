@@ -41,7 +41,9 @@ test("intrabar uses exact-instrument eligibility, explicit confirmation, cancell
     path: testInfo.outputPath("intrabar-monitor-running.png"),
     fullPage: true,
   });
-  await page.getByRole("button", { name: "BLOCKED.US", exact: true }).click();
+  await page
+    .getByRole("combobox", { name: "选择研究标的", exact: true })
+    .selectOption("TICK-BLOCKED-US");
   await expect(panel).toContainText("TICK_PROTOCOL_EVIDENCE_UNVERIFIED");
   await expect(
     panel.getByRole("button", { name: "启用正式盘中监测", exact: true }),
