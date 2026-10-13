@@ -1,0 +1,2379 @@
+{
+  "schema": "pullback-formal-runtime-benchmark-v1",
+  "generatedAt": "2026-10-13T07:10:04.461Z",
+  "status": "PASS",
+  "exitCode": 0,
+  "syntheticOnly": true,
+  "source": {
+    "commit": "dc652a0c55d6a17bcf7bd65024e51df721c99367",
+    "changes": ""
+  },
+  "environment": {
+    "node": "v24.19.0",
+    "sqlite": "3.53.4",
+    "os": "linux 6.18.44",
+    "cpu": "AMD EPYC 9V74 80-Core Processor",
+    "availableParallelism": 9,
+    "database": {
+      "kind": "separate temporary file per round on the checkout filesystem",
+      "journalMode": "wal",
+      "synchronous": "FULL",
+      "independentReadOnlyConnection": true,
+      "filesystemTypeHex": "0x794c7630",
+      "removedAfterRun": true
+    },
+    "transport": "Fastify.inject authenticated candidate and activation handlers; in-process ContractAdapter callbacks; no socket or provider requests"
+  },
+  "dataset": {
+    "instruments": 100,
+    "dailyBarsPerInstrument": 300,
+    "simultaneousFormalMonitors": 10,
+    "sampleRounds": 30,
+    "completedRounds": 30,
+    "plannedEntries": 300,
+    "fixture": "10 isolated ContractAdapter contexts plus 90 explicitly synthetic daily histories; all data is offline generated"
+  },
+  "methodology": {
+    "clock": "performance.now() measures elapsed latency; injected server clock advances through a fixed two-minute session independently and is never used to compute latency",
+    "percentile": "nearest-rank over successful samples only; every attempt including failures is retained; any failure, missing sample, audit or cleanup failure fails the run",
+    "qualifiedInputToCommit": "from immediately before the qualifying closed-minute sink callback, including immutable receipt insertion, production auto-drain, risk/reducer/event transactions, WAL/FULL COMMIT and independent SQLite read-back of ENTRY, input hash, consumed attempt, plan, reservation and notification/feed",
+    "tenPlanBurst": "all 10 monitors remain active; 10 eligible inputs dispatched serially in one JavaScript turn with no intentional gap, from before first dispatch through last independent commit verification; conservative batch bound also enforced",
+    "candidates": "100 complete histories while 10 formal monitors are WAIT_RETEST; first request on a new application cache then immediate cache hit, both authenticated; new database each round, OS and JIT caches are not reset",
+    "excluded": "database/app/fixture setup, authentication, plan activation, first retest minute and prerequisite quotes, post-measurement read-only archive audit and shutdown"
+  },
+  "candidates": {
+    "cold": {
+      "planned": 30,
+      "attempted": 30,
+      "successful": 30,
+      "failed": 0,
+      "notAttempted": 0,
+      "successfulOnly": {
+        "minMs": 1030.516,
+        "medianMs": 1154.873,
+        "p95Ms": 2200.821,
+        "maxMs": 2307.041
+      },
+      "samples": [
+        {
+          "round": 1,
+          "elapsedMs": 1063.594,
+          "success": true
+        },
+        {
+          "round": 2,
+          "elapsedMs": 1302.413,
+          "success": true
+        },
+        {
+          "round": 3,
+          "elapsedMs": 1211.634,
+          "success": true
+        },
+        {
+          "round": 4,
+          "elapsedMs": 2128.86,
+          "success": true
+        },
+        {
+          "round": 5,
+          "elapsedMs": 2307.041,
+          "success": true
+        },
+        {
+          "round": 6,
+          "elapsedMs": 2200.821,
+          "success": true
+        },
+        {
+          "round": 7,
+          "elapsedMs": 1970.156,
+          "success": true
+        },
+        {
+          "round": 8,
+          "elapsedMs": 1457.552,
+          "success": true
+        },
+        {
+          "round": 9,
+          "elapsedMs": 1030.516,
+          "success": true
+        },
+        {
+          "round": 10,
+          "elapsedMs": 1063.82,
+          "success": true
+        },
+        {
+          "round": 11,
+          "elapsedMs": 1126.447,
+          "success": true
+        },
+        {
+          "round": 12,
+          "elapsedMs": 1119.463,
+          "success": true
+        },
+        {
+          "round": 13,
+          "elapsedMs": 1112.488,
+          "success": true
+        },
+        {
+          "round": 14,
+          "elapsedMs": 1151.114,
+          "success": true
+        },
+        {
+          "round": 15,
+          "elapsedMs": 1117.949,
+          "success": true
+        },
+        {
+          "round": 16,
+          "elapsedMs": 1090.194,
+          "success": true
+        },
+        {
+          "round": 17,
+          "elapsedMs": 1079.954,
+          "success": true
+        },
+        {
+          "round": 18,
+          "elapsedMs": 1086.259,
+          "success": true
+        },
+        {
+          "round": 19,
+          "elapsedMs": 1207.012,
+          "success": true
+        },
+        {
+          "round": 20,
+          "elapsedMs": 1271.412,
+          "success": true
+        },
+        {
+          "round": 21,
+          "elapsedMs": 1263.168,
+          "success": true
+        },
+        {
+          "round": 22,
+          "elapsedMs": 1164.033,
+          "success": true
+        },
+        {
+          "round": 23,
+          "elapsedMs": 1121.061,
+          "success": true
+        },
+        {
+          "round": 24,
+          "elapsedMs": 1154.873,
+          "success": true
+        },
+        {
+          "round": 25,
+          "elapsedMs": 1211.197,
+          "success": true
+        },
+        {
+          "round": 26,
+          "elapsedMs": 1163.839,
+          "success": true
+        },
+        {
+          "round": 27,
+          "elapsedMs": 1121.54,
+          "success": true
+        },
+        {
+          "round": 28,
+          "elapsedMs": 1091.901,
+          "success": true
+        },
+        {
+          "round": 29,
+          "elapsedMs": 1260.768,
+          "success": true
+        },
+        {
+          "round": 30,
+          "elapsedMs": 1324.222,
+          "success": true
+        }
+      ]
+    },
+    "warm": {
+      "planned": 30,
+      "attempted": 30,
+      "successful": 30,
+      "failed": 0,
+      "notAttempted": 0,
+      "successfulOnly": {
+        "minMs": 120.863,
+        "medianMs": 134.332,
+        "p95Ms": 234.629,
+        "maxMs": 628.15
+      },
+      "samples": [
+        {
+          "round": 1,
+          "elapsedMs": 133.857,
+          "success": true
+        },
+        {
+          "round": 2,
+          "elapsedMs": 164.456,
+          "success": true
+        },
+        {
+          "round": 3,
+          "elapsedMs": 194.627,
+          "success": true
+        },
+        {
+          "round": 4,
+          "elapsedMs": 628.15,
+          "success": true
+        },
+        {
+          "round": 5,
+          "elapsedMs": 234.629,
+          "success": true
+        },
+        {
+          "round": 6,
+          "elapsedMs": 191.218,
+          "success": true
+        },
+        {
+          "round": 7,
+          "elapsedMs": 144.375,
+          "success": true
+        },
+        {
+          "round": 8,
+          "elapsedMs": 175.318,
+          "success": true
+        },
+        {
+          "round": 9,
+          "elapsedMs": 120.863,
+          "success": true
+        },
+        {
+          "round": 10,
+          "elapsedMs": 124.583,
+          "success": true
+        },
+        {
+          "round": 11,
+          "elapsedMs": 131.387,
+          "success": true
+        },
+        {
+          "round": 12,
+          "elapsedMs": 134.365,
+          "success": true
+        },
+        {
+          "round": 13,
+          "elapsedMs": 127.724,
+          "success": true
+        },
+        {
+          "round": 14,
+          "elapsedMs": 122.481,
+          "success": true
+        },
+        {
+          "round": 15,
+          "elapsedMs": 135.084,
+          "success": true
+        },
+        {
+          "round": 16,
+          "elapsedMs": 129.473,
+          "success": true
+        },
+        {
+          "round": 17,
+          "elapsedMs": 128.782,
+          "success": true
+        },
+        {
+          "round": 18,
+          "elapsedMs": 128.775,
+          "success": true
+        },
+        {
+          "round": 19,
+          "elapsedMs": 130.142,
+          "success": true
+        },
+        {
+          "round": 20,
+          "elapsedMs": 139.265,
+          "success": true
+        },
+        {
+          "round": 21,
+          "elapsedMs": 133.069,
+          "success": true
+        },
+        {
+          "round": 22,
+          "elapsedMs": 136.191,
+          "success": true
+        },
+        {
+          "round": 23,
+          "elapsedMs": 136.015,
+          "success": true
+        },
+        {
+          "round": 24,
+          "elapsedMs": 123.08,
+          "success": true
+        },
+        {
+          "round": 25,
+          "elapsedMs": 134.332,
+          "success": true
+        },
+        {
+          "round": 26,
+          "elapsedMs": 140.002,
+          "success": true
+        },
+        {
+          "round": 27,
+          "elapsedMs": 124.472,
+          "success": true
+        },
+        {
+          "round": 28,
+          "elapsedMs": 128.229,
+          "success": true
+        },
+        {
+          "round": 29,
+          "elapsedMs": 146.345,
+          "success": true
+        },
+        {
+          "round": 30,
+          "elapsedMs": 144.568,
+          "success": true
+        }
+      ]
+    }
+  },
+  "formalRuntime": {
+    "qualifiedInputToCommit": {
+      "planned": 300,
+      "attempted": 300,
+      "successful": 300,
+      "failed": 0,
+      "notAttempted": 0,
+      "successfulOnly": {
+        "minMs": 19.662,
+        "medianMs": 23.512,
+        "p95Ms": 44.295,
+        "maxMs": 207.277
+      },
+      "samples": [
+        {
+          "round": 1,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 25.366,
+          "success": true
+        },
+        {
+          "round": 1,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 22.015,
+          "success": true
+        },
+        {
+          "round": 1,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 23.525,
+          "success": true
+        },
+        {
+          "round": 1,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 25.494,
+          "success": true
+        },
+        {
+          "round": 1,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 23.502,
+          "success": true
+        },
+        {
+          "round": 1,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 23.884,
+          "success": true
+        },
+        {
+          "round": 1,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 24.275,
+          "success": true
+        },
+        {
+          "round": 1,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 22.863,
+          "success": true
+        },
+        {
+          "round": 1,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 31.148,
+          "success": true
+        },
+        {
+          "round": 1,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 22.22,
+          "success": true
+        },
+        {
+          "round": 2,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 33.406,
+          "success": true
+        },
+        {
+          "round": 2,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 32.213,
+          "success": true
+        },
+        {
+          "round": 2,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 26.595,
+          "success": true
+        },
+        {
+          "round": 2,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 35.878,
+          "success": true
+        },
+        {
+          "round": 2,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 31.908,
+          "success": true
+        },
+        {
+          "round": 2,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 31.538,
+          "success": true
+        },
+        {
+          "round": 2,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 26.468,
+          "success": true
+        },
+        {
+          "round": 2,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 20.458,
+          "success": true
+        },
+        {
+          "round": 2,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 24.709,
+          "success": true
+        },
+        {
+          "round": 2,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 24.528,
+          "success": true
+        },
+        {
+          "round": 3,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 32.721,
+          "success": true
+        },
+        {
+          "round": 3,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 34.316,
+          "success": true
+        },
+        {
+          "round": 3,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 21.195,
+          "success": true
+        },
+        {
+          "round": 3,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 25.268,
+          "success": true
+        },
+        {
+          "round": 3,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 21.624,
+          "success": true
+        },
+        {
+          "round": 3,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 21.146,
+          "success": true
+        },
+        {
+          "round": 3,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 25.008,
+          "success": true
+        },
+        {
+          "round": 3,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 33.422,
+          "success": true
+        },
+        {
+          "round": 3,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 38.095,
+          "success": true
+        },
+        {
+          "round": 3,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 38.968,
+          "success": true
+        },
+        {
+          "round": 4,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 33.21,
+          "success": true
+        },
+        {
+          "round": 4,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 29.975,
+          "success": true
+        },
+        {
+          "round": 4,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 33.253,
+          "success": true
+        },
+        {
+          "round": 4,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 40.351,
+          "success": true
+        },
+        {
+          "round": 4,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 95.991,
+          "success": true
+        },
+        {
+          "round": 4,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 93.171,
+          "success": true
+        },
+        {
+          "round": 4,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 82.994,
+          "success": true
+        },
+        {
+          "round": 4,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 79.948,
+          "success": true
+        },
+        {
+          "round": 4,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 207.277,
+          "success": true
+        },
+        {
+          "round": 4,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 35.616,
+          "success": true
+        },
+        {
+          "round": 5,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 52.944,
+          "success": true
+        },
+        {
+          "round": 5,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 34.666,
+          "success": true
+        },
+        {
+          "round": 5,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 22.576,
+          "success": true
+        },
+        {
+          "round": 5,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 181.132,
+          "success": true
+        },
+        {
+          "round": 5,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 115.276,
+          "success": true
+        },
+        {
+          "round": 5,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 76.054,
+          "success": true
+        },
+        {
+          "round": 5,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 56.956,
+          "success": true
+        },
+        {
+          "round": 5,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 75.124,
+          "success": true
+        },
+        {
+          "round": 5,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 85.198,
+          "success": true
+        },
+        {
+          "round": 5,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 46.81,
+          "success": true
+        },
+        {
+          "round": 6,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 33.185,
+          "success": true
+        },
+        {
+          "round": 6,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 40.982,
+          "success": true
+        },
+        {
+          "round": 6,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 34.58,
+          "success": true
+        },
+        {
+          "round": 6,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 46.79,
+          "success": true
+        },
+        {
+          "round": 6,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 34.924,
+          "success": true
+        },
+        {
+          "round": 6,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 45.351,
+          "success": true
+        },
+        {
+          "round": 6,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 40.377,
+          "success": true
+        },
+        {
+          "round": 6,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 44.295,
+          "success": true
+        },
+        {
+          "round": 6,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 38.019,
+          "success": true
+        },
+        {
+          "round": 6,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 34.847,
+          "success": true
+        },
+        {
+          "round": 7,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 34.568,
+          "success": true
+        },
+        {
+          "round": 7,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 43.924,
+          "success": true
+        },
+        {
+          "round": 7,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 36.087,
+          "success": true
+        },
+        {
+          "round": 7,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 34.536,
+          "success": true
+        },
+        {
+          "round": 7,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 32.927,
+          "success": true
+        },
+        {
+          "round": 7,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 25.523,
+          "success": true
+        },
+        {
+          "round": 7,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 25.662,
+          "success": true
+        },
+        {
+          "round": 7,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 27.572,
+          "success": true
+        },
+        {
+          "round": 7,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 30.121,
+          "success": true
+        },
+        {
+          "round": 7,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 23.402,
+          "success": true
+        },
+        {
+          "round": 8,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 23.549,
+          "success": true
+        },
+        {
+          "round": 8,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 26.212,
+          "success": true
+        },
+        {
+          "round": 8,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 27.7,
+          "success": true
+        },
+        {
+          "round": 8,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 41.69,
+          "success": true
+        },
+        {
+          "round": 8,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 31.502,
+          "success": true
+        },
+        {
+          "round": 8,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 21.256,
+          "success": true
+        },
+        {
+          "round": 8,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 20.682,
+          "success": true
+        },
+        {
+          "round": 8,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 20.598,
+          "success": true
+        },
+        {
+          "round": 8,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 23.184,
+          "success": true
+        },
+        {
+          "round": 8,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 20.489,
+          "success": true
+        },
+        {
+          "round": 9,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 21.232,
+          "success": true
+        },
+        {
+          "round": 9,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 22.586,
+          "success": true
+        },
+        {
+          "round": 9,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 19.851,
+          "success": true
+        },
+        {
+          "round": 9,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 22.162,
+          "success": true
+        },
+        {
+          "round": 9,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 20,
+          "success": true
+        },
+        {
+          "round": 9,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 19.921,
+          "success": true
+        },
+        {
+          "round": 9,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 19.662,
+          "success": true
+        },
+        {
+          "round": 9,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 19.691,
+          "success": true
+        },
+        {
+          "round": 9,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 22.486,
+          "success": true
+        },
+        {
+          "round": 9,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 20.497,
+          "success": true
+        },
+        {
+          "round": 10,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 21.463,
+          "success": true
+        },
+        {
+          "round": 10,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 26.863,
+          "success": true
+        },
+        {
+          "round": 10,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 21.427,
+          "success": true
+        },
+        {
+          "round": 10,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 23.523,
+          "success": true
+        },
+        {
+          "round": 10,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 20.962,
+          "success": true
+        },
+        {
+          "round": 10,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 22.044,
+          "success": true
+        },
+        {
+          "round": 10,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 21.507,
+          "success": true
+        },
+        {
+          "round": 10,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 20.751,
+          "success": true
+        },
+        {
+          "round": 10,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 24.016,
+          "success": true
+        },
+        {
+          "round": 10,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 21.757,
+          "success": true
+        },
+        {
+          "round": 11,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 22.378,
+          "success": true
+        },
+        {
+          "round": 11,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 25.057,
+          "success": true
+        },
+        {
+          "round": 11,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 23.512,
+          "success": true
+        },
+        {
+          "round": 11,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 23.859,
+          "success": true
+        },
+        {
+          "round": 11,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 21.926,
+          "success": true
+        },
+        {
+          "round": 11,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 21.816,
+          "success": true
+        },
+        {
+          "round": 11,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 22.28,
+          "success": true
+        },
+        {
+          "round": 11,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 21.701,
+          "success": true
+        },
+        {
+          "round": 11,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 25.42,
+          "success": true
+        },
+        {
+          "round": 11,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 20.947,
+          "success": true
+        },
+        {
+          "round": 12,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 21.451,
+          "success": true
+        },
+        {
+          "round": 12,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 25.196,
+          "success": true
+        },
+        {
+          "round": 12,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 22.427,
+          "success": true
+        },
+        {
+          "round": 12,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 24.346,
+          "success": true
+        },
+        {
+          "round": 12,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 22.721,
+          "success": true
+        },
+        {
+          "round": 12,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 22.779,
+          "success": true
+        },
+        {
+          "round": 12,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 22.478,
+          "success": true
+        },
+        {
+          "round": 12,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 22.777,
+          "success": true
+        },
+        {
+          "round": 12,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 24.806,
+          "success": true
+        },
+        {
+          "round": 12,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 23.186,
+          "success": true
+        },
+        {
+          "round": 13,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 25.068,
+          "success": true
+        },
+        {
+          "round": 13,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 25.608,
+          "success": true
+        },
+        {
+          "round": 13,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 22.893,
+          "success": true
+        },
+        {
+          "round": 13,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 25.554,
+          "success": true
+        },
+        {
+          "round": 13,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 22.493,
+          "success": true
+        },
+        {
+          "round": 13,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 21.409,
+          "success": true
+        },
+        {
+          "round": 13,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 22.335,
+          "success": true
+        },
+        {
+          "round": 13,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 21.911,
+          "success": true
+        },
+        {
+          "round": 13,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 28.606,
+          "success": true
+        },
+        {
+          "round": 13,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 26.917,
+          "success": true
+        },
+        {
+          "round": 14,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 21.891,
+          "success": true
+        },
+        {
+          "round": 14,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 24.66,
+          "success": true
+        },
+        {
+          "round": 14,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 21.141,
+          "success": true
+        },
+        {
+          "round": 14,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 24.054,
+          "success": true
+        },
+        {
+          "round": 14,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 23.762,
+          "success": true
+        },
+        {
+          "round": 14,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 26.256,
+          "success": true
+        },
+        {
+          "round": 14,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 21.714,
+          "success": true
+        },
+        {
+          "round": 14,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 20.747,
+          "success": true
+        },
+        {
+          "round": 14,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 24.772,
+          "success": true
+        },
+        {
+          "round": 14,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 22.178,
+          "success": true
+        },
+        {
+          "round": 15,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 24.222,
+          "success": true
+        },
+        {
+          "round": 15,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 26.861,
+          "success": true
+        },
+        {
+          "round": 15,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 23.698,
+          "success": true
+        },
+        {
+          "round": 15,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 25.337,
+          "success": true
+        },
+        {
+          "round": 15,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 22.729,
+          "success": true
+        },
+        {
+          "round": 15,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 23.448,
+          "success": true
+        },
+        {
+          "round": 15,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 22.315,
+          "success": true
+        },
+        {
+          "round": 15,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 24.146,
+          "success": true
+        },
+        {
+          "round": 15,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 25.904,
+          "success": true
+        },
+        {
+          "round": 15,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 23.723,
+          "success": true
+        },
+        {
+          "round": 16,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 22.711,
+          "success": true
+        },
+        {
+          "round": 16,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 24.203,
+          "success": true
+        },
+        {
+          "round": 16,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 23.075,
+          "success": true
+        },
+        {
+          "round": 16,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 24.024,
+          "success": true
+        },
+        {
+          "round": 16,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 21.322,
+          "success": true
+        },
+        {
+          "round": 16,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 20.302,
+          "success": true
+        },
+        {
+          "round": 16,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 21.14,
+          "success": true
+        },
+        {
+          "round": 16,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 20.65,
+          "success": true
+        },
+        {
+          "round": 16,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 23.804,
+          "success": true
+        },
+        {
+          "round": 16,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 21.527,
+          "success": true
+        },
+        {
+          "round": 17,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 21.675,
+          "success": true
+        },
+        {
+          "round": 17,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 24.766,
+          "success": true
+        },
+        {
+          "round": 17,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 20.579,
+          "success": true
+        },
+        {
+          "round": 17,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 25.256,
+          "success": true
+        },
+        {
+          "round": 17,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 21.109,
+          "success": true
+        },
+        {
+          "round": 17,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 22.396,
+          "success": true
+        },
+        {
+          "round": 17,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 21.639,
+          "success": true
+        },
+        {
+          "round": 17,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 20.881,
+          "success": true
+        },
+        {
+          "round": 17,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 27.341,
+          "success": true
+        },
+        {
+          "round": 17,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 20.949,
+          "success": true
+        },
+        {
+          "round": 18,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 22.112,
+          "success": true
+        },
+        {
+          "round": 18,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 23.297,
+          "success": true
+        },
+        {
+          "round": 18,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 20.428,
+          "success": true
+        },
+        {
+          "round": 18,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 24.136,
+          "success": true
+        },
+        {
+          "round": 18,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 27.413,
+          "success": true
+        },
+        {
+          "round": 18,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 29.225,
+          "success": true
+        },
+        {
+          "round": 18,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 24.177,
+          "success": true
+        },
+        {
+          "round": 18,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 27.801,
+          "success": true
+        },
+        {
+          "round": 18,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 30.821,
+          "success": true
+        },
+        {
+          "round": 18,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 28.781,
+          "success": true
+        },
+        {
+          "round": 19,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 21.709,
+          "success": true
+        },
+        {
+          "round": 19,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 23.294,
+          "success": true
+        },
+        {
+          "round": 19,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 21.727,
+          "success": true
+        },
+        {
+          "round": 19,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 24.961,
+          "success": true
+        },
+        {
+          "round": 19,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 22.877,
+          "success": true
+        },
+        {
+          "round": 19,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 23.956,
+          "success": true
+        },
+        {
+          "round": 19,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 21.382,
+          "success": true
+        },
+        {
+          "round": 19,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 22.697,
+          "success": true
+        },
+        {
+          "round": 19,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 24.588,
+          "success": true
+        },
+        {
+          "round": 19,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 22.623,
+          "success": true
+        },
+        {
+          "round": 20,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 21.938,
+          "success": true
+        },
+        {
+          "round": 20,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 22.392,
+          "success": true
+        },
+        {
+          "round": 20,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 20.108,
+          "success": true
+        },
+        {
+          "round": 20,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 24.735,
+          "success": true
+        },
+        {
+          "round": 20,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 22.763,
+          "success": true
+        },
+        {
+          "round": 20,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 22.898,
+          "success": true
+        },
+        {
+          "round": 20,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 21.021,
+          "success": true
+        },
+        {
+          "round": 20,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 21.363,
+          "success": true
+        },
+        {
+          "round": 20,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 25.167,
+          "success": true
+        },
+        {
+          "round": 20,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 21.618,
+          "success": true
+        },
+        {
+          "round": 21,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 22.898,
+          "success": true
+        },
+        {
+          "round": 21,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 23.632,
+          "success": true
+        },
+        {
+          "round": 21,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 21.537,
+          "success": true
+        },
+        {
+          "round": 21,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 24.455,
+          "success": true
+        },
+        {
+          "round": 21,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 22.241,
+          "success": true
+        },
+        {
+          "round": 21,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 21.667,
+          "success": true
+        },
+        {
+          "round": 21,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 22.366,
+          "success": true
+        },
+        {
+          "round": 21,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 22.926,
+          "success": true
+        },
+        {
+          "round": 21,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 27.568,
+          "success": true
+        },
+        {
+          "round": 21,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 23.007,
+          "success": true
+        },
+        {
+          "round": 22,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 27.641,
+          "success": true
+        },
+        {
+          "round": 22,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 27.482,
+          "success": true
+        },
+        {
+          "round": 22,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 21.107,
+          "success": true
+        },
+        {
+          "round": 22,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 25.816,
+          "success": true
+        },
+        {
+          "round": 22,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 28.378,
+          "success": true
+        },
+        {
+          "round": 22,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 22.092,
+          "success": true
+        },
+        {
+          "round": 22,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 21.862,
+          "success": true
+        },
+        {
+          "round": 22,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 21.688,
+          "success": true
+        },
+        {
+          "round": 22,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 24.324,
+          "success": true
+        },
+        {
+          "round": 22,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 22.351,
+          "success": true
+        },
+        {
+          "round": 23,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 21.322,
+          "success": true
+        },
+        {
+          "round": 23,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 24.327,
+          "success": true
+        },
+        {
+          "round": 23,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 22.086,
+          "success": true
+        },
+        {
+          "round": 23,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 26.106,
+          "success": true
+        },
+        {
+          "round": 23,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 20.388,
+          "success": true
+        },
+        {
+          "round": 23,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 20.775,
+          "success": true
+        },
+        {
+          "round": 23,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 21.009,
+          "success": true
+        },
+        {
+          "round": 23,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 20.297,
+          "success": true
+        },
+        {
+          "round": 23,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 22.333,
+          "success": true
+        },
+        {
+          "round": 23,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 20.342,
+          "success": true
+        },
+        {
+          "round": 24,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 21.368,
+          "success": true
+        },
+        {
+          "round": 24,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 23.073,
+          "success": true
+        },
+        {
+          "round": 24,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 21.073,
+          "success": true
+        },
+        {
+          "round": 24,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 24.275,
+          "success": true
+        },
+        {
+          "round": 24,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 21.974,
+          "success": true
+        },
+        {
+          "round": 24,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 22.106,
+          "success": true
+        },
+        {
+          "round": 24,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 20.835,
+          "success": true
+        },
+        {
+          "round": 24,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 23.157,
+          "success": true
+        },
+        {
+          "round": 24,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 24.13,
+          "success": true
+        },
+        {
+          "round": 24,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 22.232,
+          "success": true
+        },
+        {
+          "round": 25,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 30.888,
+          "success": true
+        },
+        {
+          "round": 25,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 30.398,
+          "success": true
+        },
+        {
+          "round": 25,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 23.752,
+          "success": true
+        },
+        {
+          "round": 25,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 28.8,
+          "success": true
+        },
+        {
+          "round": 25,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 22.347,
+          "success": true
+        },
+        {
+          "round": 25,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 21.817,
+          "success": true
+        },
+        {
+          "round": 25,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 25.124,
+          "success": true
+        },
+        {
+          "round": 25,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 22.159,
+          "success": true
+        },
+        {
+          "round": 25,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 24.819,
+          "success": true
+        },
+        {
+          "round": 25,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 21.444,
+          "success": true
+        },
+        {
+          "round": 26,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 27.381,
+          "success": true
+        },
+        {
+          "round": 26,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 25.028,
+          "success": true
+        },
+        {
+          "round": 26,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 20.934,
+          "success": true
+        },
+        {
+          "round": 26,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 22.919,
+          "success": true
+        },
+        {
+          "round": 26,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 20.817,
+          "success": true
+        },
+        {
+          "round": 26,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 19.993,
+          "success": true
+        },
+        {
+          "round": 26,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 19.877,
+          "success": true
+        },
+        {
+          "round": 26,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 19.993,
+          "success": true
+        },
+        {
+          "round": 26,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 22.613,
+          "success": true
+        },
+        {
+          "round": 26,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 20.081,
+          "success": true
+        },
+        {
+          "round": 27,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 30.383,
+          "success": true
+        },
+        {
+          "round": 27,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 38.288,
+          "success": true
+        },
+        {
+          "round": 27,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 30.322,
+          "success": true
+        },
+        {
+          "round": 27,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 40.701,
+          "success": true
+        },
+        {
+          "round": 27,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 29.185,
+          "success": true
+        },
+        {
+          "round": 27,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 25.067,
+          "success": true
+        },
+        {
+          "round": 27,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 25.078,
+          "success": true
+        },
+        {
+          "round": 27,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 29.551,
+          "success": true
+        },
+        {
+          "round": 27,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 34.224,
+          "success": true
+        },
+        {
+          "round": 27,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 28.418,
+          "success": true
+        },
+        {
+          "round": 28,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 22.581,
+          "success": true
+        },
+        {
+          "round": 28,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 23.885,
+          "success": true
+        },
+        {
+          "round": 28,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 21.566,
+          "success": true
+        },
+        {
+          "round": 28,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 26.527,
+          "success": true
+        },
+        {
+          "round": 28,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 22.936,
+          "success": true
+        },
+        {
+          "round": 28,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 21.782,
+          "success": true
+        },
+        {
+          "round": 28,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 20.06,
+          "success": true
+        },
+        {
+          "round": 28,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 24.678,
+          "success": true
+        },
+        {
+          "round": 28,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 22.144,
+          "success": true
+        },
+        {
+          "round": 28,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 20.965,
+          "success": true
+        },
+        {
+          "round": 29,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 21.826,
+          "success": true
+        },
+        {
+          "round": 29,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 23.454,
+          "success": true
+        },
+        {
+          "round": 29,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 21.703,
+          "success": true
+        },
+        {
+          "round": 29,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 23.279,
+          "success": true
+        },
+        {
+          "round": 29,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 21.659,
+          "success": true
+        },
+        {
+          "round": 29,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 22.042,
+          "success": true
+        },
+        {
+          "round": 29,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 20.263,
+          "success": true
+        },
+        {
+          "round": 29,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 20.54,
+          "success": true
+        },
+        {
+          "round": 29,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 23.116,
+          "success": true
+        },
+        {
+          "round": 29,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 22.782,
+          "success": true
+        },
+        {
+          "round": 30,
+          "instrumentId": "CONTRACT-BENCH-000",
+          "elapsedMs": 23.974,
+          "success": true
+        },
+        {
+          "round": 30,
+          "instrumentId": "CONTRACT-BENCH-001",
+          "elapsedMs": 27.37,
+          "success": true
+        },
+        {
+          "round": 30,
+          "instrumentId": "CONTRACT-BENCH-002",
+          "elapsedMs": 21.561,
+          "success": true
+        },
+        {
+          "round": 30,
+          "instrumentId": "CONTRACT-BENCH-003",
+          "elapsedMs": 26.524,
+          "success": true
+        },
+        {
+          "round": 30,
+          "instrumentId": "CONTRACT-BENCH-004",
+          "elapsedMs": 22.303,
+          "success": true
+        },
+        {
+          "round": 30,
+          "instrumentId": "CONTRACT-BENCH-005",
+          "elapsedMs": 24.439,
+          "success": true
+        },
+        {
+          "round": 30,
+          "instrumentId": "CONTRACT-BENCH-006",
+          "elapsedMs": 32.808,
+          "success": true
+        },
+        {
+          "round": 30,
+          "instrumentId": "CONTRACT-BENCH-007",
+          "elapsedMs": 32.812,
+          "success": true
+        },
+        {
+          "round": 30,
+          "instrumentId": "CONTRACT-BENCH-008",
+          "elapsedMs": 36.384,
+          "success": true
+        },
+        {
+          "round": 30,
+          "instrumentId": "CONTRACT-BENCH-009",
+          "elapsedMs": 33.005,
+          "success": true
+        }
+      ]
+    },
+    "tenPlanBurst": {
+      "planned": 30,
+      "attempted": 30,
+      "successful": 30,
+      "failed": 0,
+      "notAttempted": 0,
+      "successfulOnly": {
+        "minMs": 211.045,
+        "medianMs": 236.295,
+        "p95Ms": 736.807,
+        "maxMs": 751.717
+      },
+      "samples": [
+        {
+          "round": 1,
+          "elapsedMs": 248.012,
+          "success": true
+        },
+        {
+          "round": 2,
+          "elapsedMs": 292.349,
+          "success": true
+        },
+        {
+          "round": 3,
+          "elapsedMs": 296.388,
+          "success": true
+        },
+        {
+          "round": 4,
+          "elapsedMs": 736.807,
+          "success": true
+        },
+        {
+          "round": 5,
+          "elapsedMs": 751.717,
+          "success": true
+        },
+        {
+          "round": 6,
+          "elapsedMs": 398.113,
+          "success": true
+        },
+        {
+          "round": 7,
+          "elapsedMs": 319.508,
+          "success": true
+        },
+        {
+          "round": 8,
+          "elapsedMs": 260.628,
+          "success": true
+        },
+        {
+          "round": 9,
+          "elapsedMs": 211.045,
+          "success": true
+        },
+        {
+          "round": 10,
+          "elapsedMs": 228.188,
+          "success": true
+        },
+        {
+          "round": 11,
+          "elapsedMs": 232.682,
+          "success": true
+        },
+        {
+          "round": 12,
+          "elapsedMs": 236.151,
+          "success": true
+        },
+        {
+          "round": 13,
+          "elapsedMs": 246.676,
+          "success": true
+        },
+        {
+          "round": 14,
+          "elapsedMs": 234.867,
+          "success": true
+        },
+        {
+          "round": 15,
+          "elapsedMs": 246.911,
+          "success": true
+        },
+        {
+          "round": 16,
+          "elapsedMs": 226.518,
+          "success": true
+        },
+        {
+          "round": 17,
+          "elapsedMs": 230.328,
+          "success": true
+        },
+        {
+          "round": 18,
+          "elapsedMs": 262.062,
+          "success": true
+        },
+        {
+          "round": 19,
+          "elapsedMs": 233.612,
+          "success": true
+        },
+        {
+          "round": 20,
+          "elapsedMs": 227.611,
+          "success": true
+        },
+        {
+          "round": 21,
+          "elapsedMs": 236.295,
+          "success": true
+        },
+        {
+          "round": 22,
+          "elapsedMs": 246.76,
+          "success": true
+        },
+        {
+          "round": 23,
+          "elapsedMs": 222.516,
+          "success": true
+        },
+        {
+          "round": 24,
+          "elapsedMs": 227.543,
+          "success": true
+        },
+        {
+          "round": 25,
+          "elapsedMs": 255.724,
+          "success": true
+        },
+        {
+          "round": 26,
+          "elapsedMs": 223.263,
+          "success": true
+        },
+        {
+          "round": 27,
+          "elapsedMs": 317.144,
+          "success": true
+        },
+        {
+          "round": 28,
+          "elapsedMs": 230.825,
+          "success": true
+        },
+        {
+          "round": 29,
+          "elapsedMs": 224.21,
+          "success": true
+        },
+        {
+          "round": 30,
+          "elapsedMs": 285.393,
+          "success": true
+        }
+      ]
+    },
+    "auditsMatched": 300
+  },
+  "targets": {
+    "cachedPageP95AtMost2000ms": true,
+    "qualifiedInputToCommitP95AtMost5000ms": true,
+    "tenPlanBurstP95AtMost5000ms": true
+  },
+  "failures": [],
+  "upstream": {
+    "measured": false,
+    "latencyMs": null,
+    "timeoutCount": null,
+    "failureCount": null
+  },
+  "totalDurationMs": 87447.865,
+  "limits": [
+    "Offline trusted contract fixtures exercise the formal runtime, not actual provider evidence, an actual account, real market monitoring, or a production SLA.",
+    "Fixture context synthetic=false is the isolated adapter contract required to test the formal branch; it does not make the generated market data real or enable production capabilities.",
+    "No historical replayPlan call is used. Archive audit is read-only and excluded from measured input-to-commit latency.",
+    "No provider/network, socket transport, browser rendering, SSE delivery, target-host disk, physical power loss or simultaneous OS-process contention is measured.",
+    "Independent fresh-database rounds measure a fixed first opportunity, not long-running session/database growth or all timing paths. WAL/FULL configuration is verified, not physical durability; the filesystem type is recorded and the cloud host is not isolated from other work."
+  ]
+}
