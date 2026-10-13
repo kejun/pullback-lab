@@ -347,6 +347,62 @@ test("manual history stays preview-only until confirmed, drives all charts, and 
   await chartEvidence(page).screenshot({
     path: test.info().outputPath("research-history-mobile-chart-evidence.png"),
   });
+  const mobileReason =
+    "390px 窄屏人工复核：沿用当前历史资料与精确锚点，仅保存研究草稿。";
+  await page.getByLabel("计划依据").fill(mobileReason);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth + 1,
+    ),
+  ).toBe(true);
+  expect(
+    await page
+      .locator(".plan-editor")
+      .evaluate((element) => element.scrollWidth <= element.clientWidth),
+  ).toBe(true);
+  const mobileSave = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().endsWith(`/plans/${saved.id}/versions`),
+  );
+  await page.getByRole("button", { name: "保存新版本", exact: true }).click();
+  const mobileSaveResponse = await mobileSave;
+  expect(mobileSaveResponse.status()).toBe(200);
+  const mobileSaved = await mobileSaveResponse.json();
+  expect(mobileSaved).toMatchObject({
+    id: saved.id,
+    version: saved.version + 1,
+    researchHistoryId: updated.id,
+    anchorTime: daily.bars[0].time,
+    primarySupport: "50.01",
+    reason: mobileReason,
+    status: "DRAFT",
+  });
+  await expect(page.getByLabel("计划依据")).toHaveValue(mobileReason);
+  await expect(
+    page.locator(".plan-editor > .section-heading .badge"),
+  ).toHaveText(`版本 ${mobileSaved.version}`);
+  expect(
+    (await snapshot(page)).plans.find((plan) => plan.id === saved.id),
+  ).toMatchObject({
+    researchHistoryId: updated.id,
+    anchorTime: daily.bars[0].time,
+    reason: mobileReason,
+    status: "DRAFT",
+  });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth + 1,
+    ),
+  ).toBe(true);
+  expect(
+    await page
+      .locator(".plan-editor")
+      .evaluate((element) => element.scrollWidth <= element.clientWidth),
+  ).toBe(true);
+  await page.locator(".plan-editor").screenshot({
+    path: test.info().outputPath("research-history-mobile-plan-editor.png"),
+  });
   expect(errors).toEqual([]);
 });
 
