@@ -10,7 +10,6 @@ import {
   type ReactNode,
 } from "react";
 import type {
-  Bar,
   Bootstrap,
   CandidateRow,
   CandidatePage,
@@ -28,6 +27,15 @@ import type {
 } from "../../../packages/contracts/index";
 import { api, ApiError } from "./api";
 import ResearchChart from "./ResearchChart";
+import {
+  ResearchHistory,
+  ResearchHistoryChartEvidence,
+} from "./ResearchHistory";
+import type {
+  ResearchChartData,
+  ResearchHistoryStatus,
+  ResearchHistorySummary,
+} from "../../../packages/contracts/research-history";
 import type { ChartPriceProposal, PlanPriceField } from "./chart-price";
 import { useEventFeed } from "./useEventFeed";
 import { SyntheticRuntime } from "./SyntheticRuntime";
@@ -63,14 +71,7 @@ type ConflictReview = {
   latestPlan: Plan | null;
   latestFunds: Funds | null;
 };
-type ChartData = {
-  bars: Bar[];
-  ema9: (string | null)[];
-  ema21: (string | null)[];
-  ema50: (string | null)[];
-  avwap: (string | null)[];
-  synthetic: boolean;
-};
+type ChartData = ResearchChartData;
 const EMPTY_CHART: ChartData = {
   bars: [],
   ema9: [],
@@ -428,6 +429,14 @@ export default function App() {
   const [period, setPeriod] = useState<Period>("1D");
   const [chart, setChart] = useState<ChartData>(EMPTY_CHART);
   const [chartLoading, setChartLoading] = useState(false);
+  const [chartHistoryOverride, setChartHistoryOverride] = useState<
+    string | null
+  >(null);
+  const chartHistoryId = chartHistoryOverride ?? plan.researchHistoryId;
+  const [historyStatus, setHistoryStatus] = useState<{
+    instrumentId: string;
+    status: ResearchHistoryStatus;
+  } | null>(null);
   const [risk, setRisk] = useState<RiskResult | null>(null);
   const [supportResult, setSupportResult] = useState<{
     key: string;
@@ -437,6 +446,9 @@ export default function App() {
   const supportKey = JSON.stringify({
     instrumentId: selectedId,
     anchorTime: plan.anchorTime,
+    ...(plan.researchHistoryId
+      ? { researchHistoryId: plan.researchHistoryId }
+      : {}),
     primarySupport: plan.primarySupport,
     supportSelections: plan.supportSelections ?? [],
     ...(plan.sessionDate ? { sessionDate: plan.sessionDate } : {}),
@@ -681,8 +693,9 @@ export default function App() {
     }
     let active = true;
     setChartLoading(true);
+    setChart(EMPTY_CHART);
     api<ChartData>(
-      `/instruments/${encodeURIComponent(selectedId)}/bars?period=${period}&anchorTime=${plan.anchorTime ?? 0}`,
+      `/instruments/${encodeURIComponent(selectedId)}/bars?period=${period}&anchorTime=${plan.anchorTime ?? 0}${chartHistoryId ? `&historyId=${encodeURIComponent(chartHistoryId)}` : ""}`,
     )
       .then((data) => {
         if (active) setChart(data);
@@ -699,7 +712,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [selectedId, period, plan.anchorTime, candidates]);
+  }, [selectedId, period, plan.anchorTime, chartHistoryId, candidates]);
   useEffect(() => {
     if (!selectedId || !plan.primarySupport) return;
     let active = true;
@@ -747,18 +760,40 @@ export default function App() {
   const currentCapability = boot.capabilities.find(
     (c) => c.market === instrument?.market,
   );
-  const monitorUnavailable = boot.demo
-    ? ""
-    : !instrument?.rulesVerified
-      ? "证券规则尚未核验，暂不可启用观察。"
-      : plan.mode === "INTRABAR_CROSS" &&
-          currentCapability?.level !== "LIVE_TICK"
-        ? "需要经验证的连续实时逐笔数据。"
-        : !["LIVE_CLOSED_BAR", "LIVE_TICK"].includes(
-              currentCapability?.level || "UNKNOWN",
-            )
-          ? "行情能力尚未达到实时观察要求，当前仅供研究。"
-          : "";
+  const currentHistory =
+    historyStatus?.instrumentId === selectedId
+      ? historyStatus.status.current
+      : null;
+  const hasHistoryContext = Boolean(
+    currentHistory ||
+    plan.researchHistoryId ||
+    chart.researchHistory ||
+    chartHistoryOverride,
+  );
+  const historySaveBlocked = Boolean(
+    chartHistoryOverride ||
+    (currentHistory &&
+      (!currentHistory.current ||
+        plan.researchHistoryId !== currentHistory.id)) ||
+    (chart.researchHistory &&
+      (!chart.researchHistory.current ||
+        plan.researchHistoryId !== chart.researchHistory.id)),
+  );
+  const monitorUnavailable =
+    plan.researchHistoryId || chart.researchHistory
+      ? "人工历史研究资料不可启用正式提醒。此计划仅可保存为研究草稿。"
+      : boot.demo
+        ? ""
+        : !instrument?.rulesVerified
+          ? "证券规则尚未核验，暂不可启用观察。"
+          : plan.mode === "INTRABAR_CROSS" &&
+              currentCapability?.level !== "LIVE_TICK"
+            ? "需要经验证的连续实时逐笔数据。"
+            : !["LIVE_CLOSED_BAR", "LIVE_TICK"].includes(
+                  currentCapability?.level || "UNKNOWN",
+                )
+              ? "行情能力尚未达到实时观察要求，当前仅供研究。"
+              : "";
   const unread = eventCounts.unread;
   const activeCount = boot.plans.filter((p) =>
     ["WAIT_RETEST", "ARMED", "DATA_PAUSED", "TRIGGERED"].includes(p.status),
@@ -821,9 +856,12 @@ export default function App() {
     period,
     savedPlan?.id,
     savedPlan?.version,
+    plan.researchHistoryId,
+    chartHistoryOverride,
     instrument,
   ]);
   function openResearch(id: string, existing?: Plan) {
+    setChartHistoryOverride(null);
     planEditSeq.current++;
     setSelectedId(id);
     const latest =
@@ -840,6 +878,18 @@ export default function App() {
   function updatePlan<K extends keyof PlanInput>(key: K, value: PlanInput[K]) {
     planEditSeq.current++;
     setPlan((p) => ({ ...p, [key]: value }));
+    setDirty(true);
+    setRisk(null);
+  }
+  function adoptResearchHistory(history: ResearchHistorySummary) {
+    if (history.instrumentId !== selectedId || !history.current) return;
+    setChartHistoryOverride(null);
+    planEditSeq.current++;
+    setPlan((current) => ({
+      ...current,
+      researchHistoryId: history.id,
+      sessionDate: history.targetDate,
+    }));
     setDirty(true);
     setRisk(null);
   }
@@ -897,6 +947,13 @@ export default function App() {
   }
   async function savePlan(e: FormEvent) {
     e.preventDefault();
+    if (historySaveBlocked) {
+      setNotice({
+        text: "请明确采用当前历史资料，核对草稿后再保存新版本。旧资料仅供查阅。",
+        error: true,
+      });
+      return;
+    }
     if (conflictReview?.target.kind === "plan") {
       setNotice({
         text: "请先核对冲突版本，并明确选择提交基线。当前输入已保留。",
@@ -1945,13 +2002,19 @@ export default function App() {
                     </div>
                     <div className="instrument-metrics">
                       <div>
-                        <small>30 日涨幅</small>
+                        <small>
+                          {hasHistoryContext
+                            ? "候选池当前 · 30 日涨幅"
+                            : "30 日涨幅"}
+                        </small>
                         <strong className="positive">
                           {pct(candidate?.indicators.r30)}
                         </strong>
                       </div>
                       <div>
-                        <small>ATR14</small>
+                        <small>
+                          {hasHistoryContext ? "候选池当前 · ATR14" : "ATR14"}
+                        </small>
                         <strong>{num(candidate?.indicators.atr14)}</strong>
                       </div>
                       <div>
@@ -1978,6 +2041,24 @@ export default function App() {
                   )}
                   <div className="research-grid">
                     <div className="research-main">
+                      {!instrument.id.startsWith("DEMO-") && (
+                        <ResearchHistory
+                          key={`${instrument.id}:${savedPlan?.id ?? "new"}:${savedPlan?.version ?? 0}`}
+                          instrumentId={instrument.id}
+                          selectedHistoryId={plan.researchHistoryId}
+                          viewedHistoryId={chartHistoryOverride}
+                          onView={setChartHistoryOverride}
+                          savedPlan={Boolean(savedPlan)}
+                          onAdopt={adoptResearchHistory}
+                          onImported={refresh}
+                          onStatus={(status) =>
+                            setHistoryStatus({
+                              instrumentId: instrument.id,
+                              status,
+                            })
+                          }
+                        />
+                      )}
                       <section className="panel chart-panel">
                         <div className="panel-toolbar">
                           <div>
@@ -2005,24 +2086,45 @@ export default function App() {
                             ))}
                           </div>
                         </div>
+                        {chartHistoryOverride && (
+                          <p className="evidence-notice">
+                            当前为只读查阅图表，草稿未修改。返回当前草稿图表后再选择锚点、调价或保存。
+                          </p>
+                        )}
+                        <ResearchHistoryChartEvidence
+                          chart={chart}
+                          adopted={
+                            plan.researchHistoryId === chart.researchHistory?.id
+                          }
+                        />
                         <div className="chart-container">
                           {chartLoading && (
                             <div className="chart-loading">正在读取图表…</div>
                           )}
                           <ResearchChart
+                            key={`${instrument.id}:${chartHistoryOverride ?? "draft"}`}
                             {...chart}
                             period={period}
                             plan={plan}
                             instrumentTick={instrument.tick}
-                            onPriceProposal={proposeChartPrice}
-                            onAnchor={(time) => updatePlan("anchorTime", time)}
+                            onPriceProposal={
+                              chartHistoryOverride
+                                ? undefined
+                                : proposeChartPrice
+                            }
+                            onAnchor={(time) => {
+                              if (!chartHistoryOverride)
+                                updatePlan("anchorTime", time);
+                            }}
                           />
                         </div>
                         <div className="chart-help">
                           <Icon name="info" size={15} />
-                          {period === "1D"
-                            ? "点击已完成日线设置 AVWAP 锚点；开启图表调价后可拖动价格线，或使用最小变价单位按钮微调。"
-                            : "AVWAP 固定采用已完成日线的基准值，分钟图展示同一参考，不重新计算分钟锚点。"}
+                          {chartHistoryOverride
+                            ? "只读查阅：图表不会修改计划草稿的价格或锚点。"
+                            : period === "1D"
+                              ? "点击已完成日线设置 AVWAP 锚点；开启图表调价后可拖动价格线，或使用最小变价单位按钮微调。"
+                              : "AVWAP 固定采用已完成日线的基准值，分钟图展示同一参考，不重新计算分钟锚点。"}
                         </div>
                       </section>
                       <section className="panel research-evidence">
@@ -2030,62 +2132,71 @@ export default function App() {
                           <h3>研究依据</h3>
                           <Badge
                             tone={
+                              !hasHistoryContext &&
                               candidate?.screeningStatus === "PASS"
                                 ? "green"
                                 : "amber"
                             }
                           >
-                            {
-                              candidateState[
-                                candidate?.screeningStatus || "UNKNOWN"
-                              ]
-                            }
+                            {hasHistoryContext
+                              ? "仅供历史研究"
+                              : candidateState[
+                                  candidate?.screeningStatus || "UNKNOWN"
+                                ]}
                           </Badge>
                         </div>
-                        <div className="evidence-grid">
-                          <div>
-                            <small>EMA9 / EMA21 / EMA50</small>
-                            <strong>
-                              {num(candidate?.indicators.ema9)} /{" "}
-                              {num(candidate?.indicators.ema21)} /{" "}
-                              {num(candidate?.indicators.ema50)}
-                            </strong>
-                          </div>
-                          <div>
-                            <small>3 日紧密度</small>
-                            <strong>
-                              {candidate?.indicators.tight3 == null
-                                ? "—"
-                                : `${num(Number(candidate.indicators.tight3) * 100)}%`}
-                            </strong>
-                          </div>
-                          <div>
-                            <small>日线 AVWAP 锚点</small>
-                            <strong>{shortDate(plan.anchorTime)}</strong>
-                          </div>
-                          <div>
-                            <small>行情能力</small>
-                            <strong>
-                              {
-                                capabilityLabel[
-                                  boot.capabilities.find(
-                                    (c) => c.market === instrument.market,
-                                  )?.level || "UNKNOWN"
-                                ]
-                              }
-                            </strong>
-                          </div>
-                        </div>
-                        <ul className="reason-list">
-                          {(candidate?.reasons.length
-                            ? candidate.reasons
-                            : candidate?.screeningStatus === "PASS"
-                              ? ["当前输入通过已确认的工程筛选条件。"]
-                              : ["尚无足够数据，暂不判断筛选条件。"]
-                          ).map((r) => (
-                            <li key={r}>{r}</li>
-                          ))}
-                        </ul>
+                        {hasHistoryContext ? (
+                          <p className="evidence-notice">
+                            候选池为当前资料；当前查阅或计划可能使用固定旧资料，不能混用。历史价格与指标只在上方图表和右侧支撑证据中按各自注明的资料版本呈现。只读查阅图表不会切换草稿的支撑依据。
+                          </p>
+                        ) : (
+                          <>
+                            <div className="evidence-grid">
+                              <div>
+                                <small>EMA9 / EMA21 / EMA50</small>
+                                <strong>
+                                  {num(candidate?.indicators.ema9)} /{" "}
+                                  {num(candidate?.indicators.ema21)} /{" "}
+                                  {num(candidate?.indicators.ema50)}
+                                </strong>
+                              </div>
+                              <div>
+                                <small>3 日紧密度</small>
+                                <strong>
+                                  {candidate?.indicators.tight3 == null
+                                    ? "—"
+                                    : `${num(Number(candidate.indicators.tight3) * 100)}%`}
+                                </strong>
+                              </div>
+                              <div>
+                                <small>日线 AVWAP 锚点</small>
+                                <strong>{shortDate(plan.anchorTime)}</strong>
+                              </div>
+                              <div>
+                                <small>行情能力</small>
+                                <strong>
+                                  {
+                                    capabilityLabel[
+                                      boot.capabilities.find(
+                                        (c) => c.market === instrument.market,
+                                      )?.level || "UNKNOWN"
+                                    ]
+                                  }
+                                </strong>
+                              </div>
+                            </div>
+                            <ul className="reason-list">
+                              {(candidate?.reasons.length
+                                ? candidate.reasons
+                                : candidate?.screeningStatus === "PASS"
+                                  ? ["当前输入通过已确认的工程筛选条件。"]
+                                  : ["尚无足够数据，暂不判断筛选条件。"]
+                              ).map((r) => (
+                                <li key={r}>{r}</li>
+                              ))}
+                            </ul>
+                          </>
+                        )}
                         {universe && (
                           <ObservationEditor
                             key={instrument.id}
@@ -2102,7 +2213,10 @@ export default function App() {
                           />
                         )}
                       </section>
-                      <ActionEvidence key={instrument.id} instrumentId={instrument.id} />
+                      <ActionEvidence
+                        key={`${instrument.id}:${currentHistory?.actionEvidenceVersion ?? "none"}`}
+                        instrumentId={instrument.id}
+                      />
                       {boot.plans.filter((p) => p.instrumentId === selectedId)
                         .length > 0 && (
                         <section className="panel plan-history">
@@ -2113,6 +2227,7 @@ export default function App() {
                               onClick={() => {
                                 planEditSeq.current++;
                                 setSavedPlan(null);
+                                setChartHistoryOverride(null);
                                 setPlan(blankPlan(selectedId));
                                 setDirty(false);
                                 setRisk(null);
@@ -2381,12 +2496,28 @@ export default function App() {
                           </label>
                           <button
                             className="button primary full"
-                            disabled={busy}
+                            disabled={
+                              busy ||
+                              historySaveBlocked ||
+                              Boolean(plan.researchHistoryId && chartLoading)
+                            }
                           >
                             {savedPlan ? "保存新版本" : "保存研究计划"}
                             <Icon name="check" size={17} />
                           </button>
-                          {boot.demo && (
+                          {historySaveBlocked && (
+                            <p className="support-warning" role="status">
+                              {chartHistoryOverride
+                                ? "正在只读查阅历史图表。请返回当前草稿图表后再保存。"
+                                : "历史资料尚未采用或已失效。请在资料入口明确采用当前资料，再保存新版本。"}
+                            </p>
+                          )}
+                          {plan.researchHistoryId && savedPlan && dirty && (
+                            <p className="field-explanation">
+                              当前历史研究改动仅在草稿中，请保存新版本。原有计划记录保持不变。
+                            </p>
+                          )}
+                          {boot.demo && !plan.researchHistoryId && (
                             <button
                               type="button"
                               className="text-button sample-link"
@@ -2614,7 +2745,7 @@ export default function App() {
                             {monitorUnavailable}
                           </small>
                         )}
-                        {(!savedPlan || dirty) && (
+                        {(!savedPlan || dirty) && !plan.researchHistoryId && (
                           <small className="disabled-reason">
                             {!savedPlan
                               ? "保存计划后可检查风险并启用观察。"

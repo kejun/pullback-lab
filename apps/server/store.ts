@@ -1,3 +1,8 @@
+import {
+  researchHistoryBars,
+  readResearchHistory,
+  assertCurrentResearchHistory,
+} from "./research-history.js";
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
@@ -206,13 +211,25 @@ export class Store {
     this.instrument(id);
     if (
       this.db
-        .prepare("SELECT 1 FROM corporate_action_snapshots WHERE instrument_id=? LIMIT 1")
+        .prepare(
+          "SELECT 1 FROM corporate_action_snapshots WHERE instrument_id=? LIMIT 1",
+        )
         .get(id)
     )
       throw new ApiError(
         409,
         "INSTRUMENT_HAS_ACTION_EVIDENCE",
         "标的已有公司行动证据，请保留证券及其不可变历史；可修改观察笔记",
+      );
+    if (
+      this.db
+        .prepare("SELECT 1 FROM research_history WHERE instrument_id=? LIMIT 1")
+        .get(id)
+    )
+      throw new ApiError(
+        409,
+        "INSTRUMENT_HAS_RESEARCH_HISTORY",
+        "标的已有不可变历史研究资料，请保留其来源引用",
       );
     if (this.plans().some((p) => p.instrumentId === id))
       throw new ApiError(
@@ -228,7 +245,9 @@ export class Store {
     );
     for (const bar of bars) stmt.run(id, period, bar.id, bar.time, json(bar));
   }
-  bars(id: string, period: string): Bar[] {
+  bars(id: string, period: string, historyId?: string): Bar[] {
+    const historical = researchHistoryBars(this.db, id, period, historyId);
+    if (historical !== null) return historical;
     return (
       this.db
         .prepare(
@@ -241,8 +260,9 @@ export class Store {
     id: string,
     knownAt: number,
     sessionDate?: string,
+    historyId?: string,
   ): Bar[] {
-    return this.bars(id, "1D").filter(
+    return this.bars(id, "1D", historyId).filter(
       (bar) =>
         bar.final &&
         bar.receivedAt <= knownAt &&
@@ -262,7 +282,19 @@ export class Store {
     sessionDate?: string,
   ): SupportSnapshot {
     const instrument = this.instrument(input.instrumentId).instrument;
-    const bars = this.supportBars(input.instrumentId, now, sessionDate);
+    const bars = this.supportBars(
+      input.instrumentId,
+      now,
+      sessionDate,
+      input.researchHistoryId,
+    );
+    const research = input.researchHistoryId
+      ? readResearchHistory(
+          this.db,
+          input.instrumentId,
+          input.researchHistoryId,
+        )
+      : null;
     // Only the server-installed synthetic fixture has a verified history today.
     // Real feed metadata is kept in quarantine until independent validation exists.
     const synthetic =
@@ -273,13 +305,13 @@ export class Store {
           bar.id.startsWith("synthetic:") &&
           (bar as Bar & { synthetic?: boolean }).synthetic === true,
       );
-    return freezeSupport(
+    const result = freezeSupport(
       { ...input, supportSelections: input.supportSelections ?? [] },
       instrument,
       {
         bars,
         historyComplete: synthetic,
-        adjustmentVerified: synthetic,
+        adjustmentVerified: synthetic || research !== null,
         synthetic,
         dataRevision: this.revision(bars),
         instrumentRevision: this.revision(instrument),
@@ -287,6 +319,18 @@ export class Store {
       now,
       reason,
     );
+    if (research) {
+      result.ready = false;
+      result.status = "INCOMPLETE";
+      result.reasons = [
+        ...new Set([
+          ...result.reasons,
+          "HISTORICAL_RESEARCH_ONLY",
+          ...research.summary.reasons,
+        ]),
+      ];
+    }
+    return result;
   }
   /** Compare all daily inputs, including EMA seeds and the AVWAP anchor, with the frozen version. */
   supportRevisionReasons(plan: Plan, now: number): string[] {
@@ -294,10 +338,23 @@ export class Store {
     if (!frozen || frozen.schemaVersion !== 2)
       return ["SUPPORT_SNAPSHOT_REQUIRED"];
     const reasons: string[] = [];
+    if (plan.researchHistoryId) {
+      const research = readResearchHistory(
+        this.db,
+        plan.instrumentId,
+        plan.researchHistoryId,
+      );
+      if (!research?.summary.current)
+        reasons.push("PLAN_DATA_REVISION_CHANGED");
+    }
     const instrument = this.instrument(plan.instrumentId).instrument;
     if (this.revision(instrument) !== frozen.instrumentRevision)
       reasons.push("INSTRUMENT_REVISION_CHANGED");
-    const daily = this.bars(plan.instrumentId, "1D").filter(
+    const daily = this.bars(
+      plan.instrumentId,
+      "1D",
+      plan.researchHistoryId,
+    ).filter(
       (bar) =>
         bar.final &&
         bar.receivedAt <= now &&
@@ -390,6 +447,11 @@ export class Store {
   createPlan(input: PlanInput, now: number): Plan {
     return this.transaction(() => {
       this.instrument(input.instrumentId);
+      assertCurrentResearchHistory(
+        this.db,
+        input.instrumentId,
+        input.researchHistoryId,
+      );
       const p: Plan = {
         ...input,
         screeningRuleSnapshot: currentScreeningRule(this.db),
@@ -413,7 +475,12 @@ export class Store {
     });
   }
   private savePlanVersion(p: Plan, now: number) {
-    const bars = this.supportBars(p.instrumentId, now, p.sessionDate);
+    const bars = this.supportBars(
+      p.instrumentId,
+      now,
+      p.sessionDate,
+      p.researchHistoryId,
+    );
     const anchor = bars.find((bar) => bar.time === p.anchorTime);
     this.db.prepare("INSERT INTO plan_versions VALUES(?,?,?)").run(
       p.id,
@@ -445,6 +512,11 @@ export class Store {
           "先记录该入场提醒已交易或已跳过，再修改计划",
         );
       this.instrument(input.instrumentId);
+      assertCurrentResearchHistory(
+        this.db,
+        input.instrumentId,
+        input.researchHistoryId,
+      );
       this.release(id);
       const p: Plan = {
         ...input,

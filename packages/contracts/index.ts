@@ -162,6 +162,8 @@ export interface SupportSnapshot {
   synthetic: boolean;
 }
 export interface SupportPreviewInput {
+  /** Explicit immutable manual research dataset; never grants live capability. */
+  researchHistoryId?: string;
   instrumentId: string;
   anchorTime: number | null;
   primarySupport: string;
@@ -169,6 +171,8 @@ export interface SupportPreviewInput {
   sessionDate?: string;
 }
 export interface PlanInput {
+  /** Explicit immutable manual research dataset; never grants live capability. */
+  researchHistoryId?: string;
   instrumentId: string;
   anchorTime: number | null;
   primarySupport: string;

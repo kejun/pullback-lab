@@ -25,6 +25,8 @@ function decimalLabel(value: string | null): string {
     : value;
 }
 const reasonLabels: Record<string, string> = {
+  HISTORICAL_RESEARCH_ONLY:
+    "人工历史重建资料仅供研究，非当时已知，不可启用正式提醒。",
   DAILY_HISTORY_INCOMPLETE: "已完成日线不足，或历史完整性尚未验证。",
   ADJUSTMENT_EVIDENCE_UNVERIFIED: "拆股复权依据尚未验证。",
   INSTRUMENT_RULES_UNVERIFIED: "证券规则尚未验证。",

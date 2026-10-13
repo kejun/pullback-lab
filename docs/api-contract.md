@@ -55,3 +55,16 @@ computedAt 是候选计算时间，evaluatedAt 是此次读取时间，均不能
 PlanInput.supportSelections 可选 EMA9/EMA21/EMA50/AVWAP，或带 id、label、price 的 HORIZONTAL；多条 EMA 只算一个家族。Plan.supportSnapshot 为服务端生成的只读版本 2 快照。至少两个容差内家族且含 EMA 或 AVWAP，同时具有完整日线、ATR、规则及复权证据，才允许合成观察。预览的 sessionDate 应与待保存计划相同；冻结依据修订或旧计划缺快照时，启用检查要求显式保存新版本。
 
 审计的 MATCH 只说明所归档输入可复现。算法未知或缺少完整冻结结构时返回 UNSUPPORTED；哈希、输入序列、状态或事件不一致时返回 MISMATCH。coverage 分别标明触发核和最终风险是否重新计算，不能将早期冻结风险门结论的重用解释为独立重新获取行情和资金。
+
+## 人工历史资料（v10 存储）
+
+所有接口继承私有鉴权、no-store、写入 CSRF 与 Origin 约束。人工资料不会进入供应商已验证队列，不改变 liveEligible。
+
+- GET `/api/instruments/:id/research-history`：当前和最近 20 份不可变资料摘要。
+- GET `/api/instruments/:id/research-history/template`：当前标的 JSON 模板，可带当前公司行动原文；来源占位不可导入。
+- POST `/api/instruments/:id/research-history/preview`：`{manifest}`，只读事务返回 token、expectedHistoryId、expectedActionVersion、摘要及警告。
+- POST `/api/instruments/:id/research-history`：同一 manifest，加预览 token、两个 expected 版本和 `confirmed:true`。实际接收时间由服务端设定；事务保存公司行动与历史资料。成功返回 IMPORTED/DUPLICATE 和 history；版本冲突 409，不回填或覆盖旧资料。
+- `/bars` 可携 `historyId` 读取固定历史图表；不携时读取最新资料。响应含 researchHistory 身份/是否当前、avwapCutoffs（上一日线完成时刻，UTC 秒）。已替代资料可读但不能用于新的保存。
+- 计划与支撑预览可携 `researchHistoryId`。保存计划必须明确指定当前资料，冻结版本和支撑；无权据此启动真实提醒。
+
+manifest 最大 2 MiB、3000 根，严格字段契约与例子见 `docs/research-history.md`。原始来源接收时间不能由客户端提供，历史 AVWAP 是事后重建，不能当作当时已知的决策输入。

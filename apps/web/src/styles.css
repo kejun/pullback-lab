@@ -3306,3 +3306,105 @@ details > summary {
 .receipt-payload { margin-top: 12px; }
 .provider-receipts .evidence-version-label { font-size: 12px; }
 .provider-receipts .evidence-source { max-height: 240px; font-size: 11px; }
+
+.research-history {
+  padding: 24px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.research-history .section-heading {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.research-history small {
+  color: var(--muted);
+}
+.research-history p,
+.history-chart-evidence {
+  font-size: 12px;
+  line-height: 1.8;
+}
+.history-facts {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+}
+.history-facts > div {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  gap: 10px;
+}
+.history-facts dt {
+  color: var(--muted);
+}
+.history-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0;
+}
+.history-actions a {
+  text-decoration: none;
+}
+.history-file {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+  min-width: 0;
+}
+.history-file input {
+  max-width: 100%;
+  width: 280px;
+  font: inherit;
+}
+.current-history summary,
+.history-chart-evidence summary {
+  cursor: pointer;
+  font-size: 12px;
+}
+.history-preview {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+  margin-top: 16px;
+}
+.history-preview .checkbox {
+  margin: 16px 0;
+  align-items: flex-start;
+  line-height: 1.8;
+}
+.history-notice {
+  color: var(--green);
+}
+.history-chart-evidence {
+  padding: 0 24px 18px;
+  overflow-wrap: anywhere;
+}
+.history-avwap-values {
+  max-height: 240px;
+  overflow: auto;
+  padding-left: 20px;
+}
+.history-avwap-values li {
+  padding-bottom: 6px;
+}
+@media (max-width: 600px) {
+  .research-history {
+    padding: 16px;
+  }
+  .history-chart-evidence {
+    padding: 0 16px 16px;
+  }
+  .history-facts > div {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
+.history-format-help { margin: 14px 0; font-size: 12px; line-height: 1.8; }
+.history-format-help summary { cursor: pointer; }
+.history-format-help ul { margin: 10px 0; padding-left: 20px; }
+.history-format-help li { margin: 6px 0; }

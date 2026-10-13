@@ -94,3 +94,5 @@ Linear 项目：<https://linear.app/kejunz/project/pullback-lab-回调交易研�
 `npm run --silent basis:audit -- REQUEST.json` 可只读核验已入库的日线、1 分钟和 5 分钟样本是否共享已收盘目标会话的拆股尺度。报告固定证据版本、接收水位与输入指纹；通过只表示所选窗口数值一致，不开放真实行情。准备输入、退出码与范围见 [价格尺度审计](docs/price-basis-audit.md)。
 
 设置页可按周期查看已保存的采样回执、校验哈希、对比同根前序并下载当前报告。旧版请求周期明确保留未知。查看不会放行隔离行情，操作及限制见 [采样回执核验](docs/provider-receipts.md)。
+
+研究页现在可下载模板、预览并明确导入人工历史资料，直接查看统一拆股尺度的日线/分钟图，选择锚点和保存固定资料版本的计划草稿。导入时间真实保留，分钟 AVWAP 明确标为事后历史重建；人工资料不开放真实提醒。格式与边界见[人工历史资料](docs/research-history.md)和[第十三批验收](docs/acceptance-v13.md)。

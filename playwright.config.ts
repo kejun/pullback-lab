@@ -11,6 +11,7 @@ const scenarios = [
   "recovery",
   "action-evidence",
   "market-sampling",
+  "research-history",
 ] as const;
 
 export default defineConfig({
@@ -50,6 +51,7 @@ export default defineConfig({
       PULLBACK_MARKET_WORKER: "0",
       PULLBACK_MINUTE_SYMBOLS: name === "market-sampling" ? "SAMPLE.US" : "",
       MARKET_SAMPLING_E2E: name === "market-sampling" ? "1" : "0",
+      RESEARCH_HISTORY_E2E: name === "research-history" ? "1" : "0",
       ACTION_EVIDENCE_E2E: name === "action-evidence" ? "1" : "0",
     },
   })),
