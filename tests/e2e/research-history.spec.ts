@@ -287,11 +287,14 @@ test("manual history stays preview-only until confirmed, drives all charts, and 
   expect(saved.anchorTime).toBe(daily.bars[0].time);
   expect(saved.status).toBe("DRAFT");
   await expect(
-    page.getByRole("button", { name: "启用合成计划观察", exact: true }),
+    page.getByRole("button", { name: "启用正式收盘监测", exact: true }),
   ).toBeDisabled();
   await expect(
     page.getByRole("region", { name: "支撑家族与证据" }),
   ).toContainText("人工历史重建资料仅供研究");
+
+  await expect(page.getByRole("region", { name: "正式收盘监测", exact: true })).toContainText("未配置正式行情适配器");
+  await expect(page.getByRole("region", { name: "正式收盘监测", exact: true })).toContainText("人工历史资料仅供研究");
 
   // A new import elsewhere cannot silently switch the saved draft to new evidence.
   const updated = await importViaApi(page, {

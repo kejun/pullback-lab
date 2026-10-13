@@ -12,6 +12,7 @@ const scenarios = [
   "action-evidence",
   "market-sampling",
   "research-history",
+  "formal-monitor",
 ] as const;
 
 export default defineConfig({
@@ -39,7 +40,7 @@ export default defineConfig({
       : undefined,
   },
   webServer: scenarios.map((name, index) => ({
-    command: "node --import tsx scripts/e2e-server.ts",
+    command: name === "formal-monitor" ? "node --import tsx scripts/e2e-formal-monitor.ts" : "node --import tsx scripts/e2e-server.ts",
     url: `http://127.0.0.1:${4180 + index}/api/health`,
     reuseExistingServer: false,
     env: {
