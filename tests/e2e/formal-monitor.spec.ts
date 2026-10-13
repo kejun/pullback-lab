@@ -309,3 +309,43 @@ test("formal controls require explicit confirmation, recover server CAS conflict
   await cdp.detach();
   expect(errors).toEqual([]);
 });
+
+test("hung plan refresh is bounded, releases controls, and cannot apply its late response", async ({
+  page,
+}) => {
+  await login(page);
+  await page.clock.install();
+  let entered!: () => void;
+  const intercepted = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/bootstrap", async (route) => {
+    const response = await route.fetch();
+    entered();
+    await hold;
+    await route.fulfill({ response });
+  });
+  const refresh = panel(page).getByRole("button", {
+    name: "读取最新监测状态",
+    exact: true,
+  });
+  await refresh.click();
+  await intercepted;
+  await page.clock.fastForward(15001);
+  await expect(panel(page)).toContainText("状态未确认");
+  await expect(refresh).toBeEnabled();
+  await expect(
+    panel(page).getByRole("button", { name: "暂停正式监测", exact: true }),
+  ).toBeDisabled();
+  release();
+  await page.unroute("**/api/bootstrap");
+  await refresh.click();
+  await expect(panel(page)).not.toContainText("状态未确认");
+  await expect(
+    panel(page).getByRole("button", { name: "暂停正式监测", exact: true }),
+  ).toBeEnabled();
+});

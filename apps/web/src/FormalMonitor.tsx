@@ -52,7 +52,7 @@ export function FormalMonitor({
 }: {
   plan: Plan;
   disabled: boolean;
-  onChanged: () => Promise<void>;
+  onChanged: (signal?: AbortSignal) => Promise<void>;
   onBusyChange: (value: boolean) => void;
 }) {
   const [snapshot, setSnapshot] = useState<MonitorSnapshot | null>(null);
@@ -78,7 +78,7 @@ export function FormalMonitor({
     const timeout = window.setTimeout(() => controller.abort(), 15000);
     setLoading(true);
     try {
-      if (refreshPlan) await callback.current();
+      if (refreshPlan) await callback.current(controller.signal);
       if (!active.current || !reads.current.current(requested)) return;
       const result = await api<MonitorSnapshot>(
         `/plans/${encodeURIComponent(plan.id)}/monitor`,
@@ -148,18 +148,20 @@ export function FormalMonitor({
     onBusyChange(true);
     setError(null);
     reads.current.cancel();
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
     try {
       await api(
         `/plans/${encodeURIComponent(plan.id)}/${kind === "recover" ? "monitor/recover" : kind}`,
         "POST",
         monitorCommandBody(plan, snapshot, kind),
-        { signal: AbortSignal.timeout(20000) },
+        { signal: controller.signal },
       );
       if (!active.current) return;
       setConfirmation(null);
       // No optimistic activation. Adopt a new plan/attempt only after server readback.
       setNeedsRefresh(true);
-      await callback.current();
+      await callback.current(controller.signal);
       if (active.current) {
         commandLock.current = false;
         await read(true, false);
@@ -176,6 +178,7 @@ export function FormalMonitor({
           : `${message}。请先读取最新状态确认结果；不会自动重试或启用。`,
       );
     } finally {
+      window.clearTimeout(timeout);
       commandLock.current = false;
       onBusyChange(false);
       if (active.current) setPending(false);

@@ -497,7 +497,7 @@ export default function App() {
   const priceProposalSeq = useRef(0);
   const priceProposalContext = useRef("");
   const refreshSeq = useRef(0);
-  async function refresh(updateSelected = false) {
+  async function refresh(updateSelected = false, signal?: AbortSignal) {
     const editing = planEditSeq.current;
     const mayUpdateSelected =
       updateSelected && !dirty && conflictReview?.target.kind !== "plan";
@@ -509,10 +509,11 @@ export default function App() {
       let response: [Bootstrap, CandidatePage, UniverseSnapshot] | null = null;
       for (let attempt = 0; attempt < 3; attempt++) {
         const values = await Promise.all([
-          api<Bootstrap>("/bootstrap"),
-          api<CandidatePage>("/candidates"),
-          api<UniverseSnapshot>("/universe"),
+          api<Bootstrap>("/bootstrap", "GET", undefined, { signal }),
+          api<CandidatePage>("/candidates", "GET", undefined, { signal }),
+          api<UniverseSnapshot>("/universe", "GET", undefined, { signal }),
         ]);
+        if (signal?.aborted) throw new Error("状态刷新超时或已取消，请重试读取。");
         if (requested !== refreshSeq.current) return;
         const [bootstrap, page, list] = values;
         if (
@@ -530,6 +531,7 @@ export default function App() {
           "列表或筛选规则连续发生变更，未覆盖当前结果，请稍后刷新",
         );
       const [b, c, u] = response;
+      if (signal?.aborted) throw new Error("状态刷新超时或已取消，请重试读取。");
       if (requested !== refreshSeq.current) return;
       setBoot(b);
       setCandidates(c.candidates);
@@ -558,6 +560,7 @@ export default function App() {
           setRisk(null);
       }
     } catch (error) {
+      if (signal?.aborted) throw error;
       if (requested !== refreshSeq.current) return;
       setCandidateError(
         error instanceof Error ? error.message : "候选结果读取失败",
@@ -2767,7 +2770,7 @@ export default function App() {
                             plan={savedPlan}
                             disabled={busy || dirty || Boolean(chartHistoryOverride) || conflictReview?.target.kind === "plan"}
                             onBusyChange={setBusy}
-                            onChanged={() => refresh(true)}
+                            onChanged={(signal) => refresh(true, signal)}
                           />
                         )}
                         {savedPlan && !savedPlan.supportSnapshot?.ready && (
