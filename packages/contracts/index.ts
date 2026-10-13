@@ -118,6 +118,8 @@ export type SupportSelection =
   | { source: "HORIZONTAL"; id: string; price: string; label: string };
 export type SupportFamily = "EMA" | "AVWAP" | "HORIZONTAL";
 export interface SupportSnapshot {
+  /** Installed server proof identity, absent from uploads and synthetic history. */
+  providerContextId?: string;
   schemaVersion: 2;
   status: "READY" | "INCOMPLETE";
   ready: boolean;

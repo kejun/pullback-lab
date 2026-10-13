@@ -1,3 +1,4 @@
+import { calculateClosedRisk, type ClosedRiskInput } from "./closed-risk.js";
 import { createHash } from "node:crypto";
 import Decimal from "decimal.js";
 import { z } from "zod";
@@ -454,6 +455,69 @@ export function auditDecisionInput(input: AuditReplayInput): AuditReplayResult {
     );
     result.status = "MATCH";
     return result;
+  }
+  if (snapshot.runtimeVersion === "closed-bar-v1") {
+    const riskInput = snapshot.riskInput;
+    if (
+      !object(riskInput) ||
+      !object(riskInput.plan) ||
+      !object(riskInput.instrument) ||
+      !Array.isArray(riskInput.reservations) ||
+      !Number.isSafeInteger(riskInput.decisionAt) ||
+      !Number.isSafeInteger(riskInput.sessionOpenAt)
+    )
+      return stop("UNSUPPORTED", "RISK_SNAPSHOT_UNSUPPORTED");
+    try {
+      const frozen = riskInput as unknown as ClosedRiskInput;
+      const latest = frozenInputs.at(-1);
+      if (
+        frozen.plan.id !== frozenConfig.planId ||
+        frozen.plan.version !== frozenConfig.planVersion ||
+        frozen.plan.attemptId !== frozenConfig.attemptId ||
+        frozen.instrument.id !== frozen.plan.instrumentId ||
+        frozen.sessionOpenAt !== frozenConfig.sessionOpenAt ||
+        canonical(frozen.plan) !== canonical(snapshot.plan) ||
+        canonical(frozen.funds) !== canonical(snapshot.funds) ||
+        canonical(frozen.reservations) !== canonical(snapshot.reservations) ||
+        canonical(frozen.instrument) !==
+          canonical(
+            (snapshot.planVersion as { instrument?: unknown })?.instrument,
+          ) ||
+        canonical(
+          frozen.quote
+            ? { price: frozen.quote.price, at: frozen.quote.at }
+            : undefined,
+        ) !==
+          canonical(latest?.type === "BAR" ? latest.gates?.quote : undefined) ||
+        frozen.decisionAt !== snapshot.decisionTime ||
+        latest?.type !== "BAR" ||
+        latest.gates?.decisionAt !== frozen.decisionAt
+      )
+        throw new Error("RISK_FROZEN_CONTEXT_MISMATCH");
+      const risk = calculateClosedRisk(frozen);
+      const gate = {
+        status: risk.passed ? "PASS" : "BLOCKED",
+        reasons: risk.reasons,
+        quantity: risk.quantity,
+      };
+      const matches =
+        canonical(risk) === canonical(snapshot.risk) &&
+        canonical(gate) === canonical(latest.gates?.risk);
+      check(
+        "risk",
+        matches ? "PASS" : "FAIL",
+        matches
+          ? "按冻结的真实决策时间、报价、资金代际与当前预留重算一致"
+          : "正式风险或门控与冻结输入不一致",
+      );
+      if (!matches) return stop("MISMATCH", "RISK_OUTPUT_MISMATCH");
+      result.coverage.risk = "RECOMPUTED";
+      result.replayed!.quantity = risk.quantity;
+      result.status = "MATCH";
+      return result;
+    } catch {
+      return stop("MISMATCH", "RISK_FROZEN_CONTEXT_MISMATCH");
+    }
   }
   const riskSnapshot = riskSnapshotSchema.safeParse(snapshot);
   if (!riskSnapshot.success) {

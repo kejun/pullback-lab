@@ -1,3 +1,5 @@
+import { ClosedBarRuntime } from "./closed-bar-runtime.js";
+import type { ClosedBarAdapter } from "./closed-bar-adapter.js";
 import {
   registerResearchHistoryRoutes,
   readResearchHistory,
@@ -58,10 +60,13 @@ export interface AppOptions {
   logger?: boolean;
   restore?: boolean;
   marketStatus?: () => MarketWorkerStatus;
+  /** Trusted server dependency only; never read from configuration JSON or a request. */
+  closedBarAdapter?: ClosedBarAdapter;
 }
 export type PullbackApp = FastifyInstance & {
   store: Store;
   runtime: AttemptRuntime;
+  monitor: ClosedBarRuntime;
 };
 const numeric = z
   .string()
@@ -182,6 +187,11 @@ export async function createApp(
   } else if (store.funds()) store.markRestored(now());
   const runtime = new AttemptRuntime(store, { now });
   app.decorate("runtime", runtime);
+  const monitor = new ClosedBarRuntime(store, {
+    now,
+    adapter: options.closedBarAdapter,
+  });
+  app.decorate("monitor", monitor);
   await app.register(cookie);
   const auth = (request: FastifyRequest) => {
     const token = request.cookies.pullback_session;
@@ -410,6 +420,31 @@ export async function createApp(
       return result;
     });
   }
+  app.get<{ Params: { id: string } }>(
+    "/api/plans/:id/monitor",
+    async (request) => ({
+      availability: monitor.availability(),
+      progress: monitor.status(request.params.id),
+    }),
+  );
+  app.post<{ Params: { id: string } }>(
+    "/api/plans/:id/monitor/recover",
+    async (request) =>
+      command(request, () => {
+        const p = checkedPlan(request.params.id, request.body);
+        const recovery = z
+          .object({
+            sourceAttemptId: z.string().min(1).max(120),
+            expectedWatermark: integer,
+          })
+          .parse(request.body);
+        return monitor.activate(
+          p.id,
+          { expectedVersion: p.version, expectedAttemptId: p.attemptId },
+          recovery,
+        );
+      }),
+  );
   registerUniverseRoutes(app, store, command);
   app.get("/api/settings/screening", async () => store.screeningSettings());
   app.post("/api/settings/screening", async (request) =>
@@ -648,7 +683,12 @@ export async function createApp(
       return command(request, () => {
         const p = checkedPlan(request.params.id, request.body);
         const expected = p.version;
-        if (!demo || !p.instrumentId.startsWith("DEMO-"))
+        if (!p.instrumentId.startsWith("DEMO-"))
+          return monitor.activate(p.id, {
+            expectedVersion: p.version,
+            expectedAttemptId: p.attemptId,
+          });
+        if (!demo)
           throw new ApiError(
             422,
             "LIVE_CAPABILITY_UNVERIFIED",
@@ -980,6 +1020,7 @@ export async function createApp(
     },
   );
   app.addHook("preClose", async () => {
+    await monitor.stop();
     runtime.close();
     for (const stream of streams) clearInterval(stream);
     for (const response of connections) response.destroy();
@@ -988,6 +1029,7 @@ export async function createApp(
     connections.clear();
   });
   app.addHook("onClose", async () => {
+    await monitor.stop();
     runtime.close();
     store.close();
   });
