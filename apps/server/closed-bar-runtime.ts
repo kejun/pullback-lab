@@ -611,15 +611,22 @@ export class ClosedBarRuntime {
       input.type === "BAR" ||
       (input.type === "TICK" && config.mode === "INTRABAR_CROSS")
     ) {
-      const quotes = [
-        ...this.knownQuotes(row, now),
-        ...(config.mode === "INTRABAR_CROSS"
-          ? this.knownTickQuotes(row, now)
-          : []),
-      ].filter((x) => x.q.at >= config.activatedAt);
-      const latest = quotes
-        .toSorted((a, b) => a.q.at - b.q.at || a.r.seq - b.r.seq)
-        .at(-1)?.q;
+      const tickQuotes =
+        config.mode === "INTRABAR_CROSS"
+          ? this.knownTickQuotes(row, now).filter(
+              (x) => x.q.at >= config.activatedAt,
+            )
+          : [];
+      const quotes = [...this.knownQuotes(row, now), ...tickQuotes].filter(
+        (x) => x.q.at >= config.activatedAt,
+      );
+      // Provider packet/position order, never replay receipt order, defines an intrabar last trade.
+      const latest =
+        config.mode === "INTRABAR_CROSS" && tickQuotes.length
+          ? tickQuotes.at(-1)!.q
+          : quotes
+              .toSorted((a, b) => a.q.at - b.q.at || a.r.seq - b.r.seq)
+              .at(-1)?.q;
       const stop = quotes.find((x) => new Decimal(x.q.price).lte(config.stop));
       let knownStop = stop
         ? { price: stop.q.price, at: stop.q.at, receivedAt: stop.r.received_at }
@@ -907,19 +914,23 @@ export class ClosedBarRuntime {
     decisionAt: number,
   ): Array<{ q: ClosedQuote; r: Receipt }> {
     const c = this.context(row.context_id);
+    const seen = new Set<string>();
+    // Include pre-activation first occurrences in the dedupe set so their later replay cannot become new evidence.
     return (
       this.store.db
         .prepare(
-          "SELECT * FROM closed_receipts WHERE connection_epoch=? AND instrument_id=? AND kind='TICK_PACKET' AND seq>? AND received_at<=? ORDER BY seq",
+          "SELECT * FROM closed_receipts WHERE connection_epoch=? AND instrument_id=? AND kind='TICK_PACKET' AND received_at<=? ORDER BY seq",
         )
-        .all(
-          row.connection_epoch,
-          c.instrument.id,
-          row.activation_seq,
-          decisionAt,
-        ) as Receipt[]
+        .all(row.connection_epoch, c.instrument.id, decisionAt) as Receipt[]
     ).flatMap((r) => {
       const packet = decode<TickPacket>(r.payload_json);
+      const identity = JSON.stringify([
+        packet.providerEpoch,
+        packet.providerSequence,
+      ]);
+      if (seen.has(identity)) return [];
+      seen.add(identity);
+      if (r.seq <= row.activation_seq) return [];
       return packet.trades.map((t) => ({
         r,
         q: {

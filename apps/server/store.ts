@@ -1247,12 +1247,14 @@ export class Store {
         event.time,
         event.receivedAt,
         event.type === "ENTRY_TRIGGERED"
-          ? "收盘确认通过当前成交价估计与资金检查；价格不保证可成交，请人工核对"
+          ? p.mode === "INTRABAR_CROSS"
+            ? "盘中穿越通过当前成交价估计与资金检查；收盘前可能回落，价格不保证可成交，请人工核对"
+            : "收盘确认通过当前成交价估计与资金检查；价格不保证可成交，请人工核对"
           : event.type === "TECHNICAL_TRIGGERED"
             ? "首次合格技术突破；本次尝试已消费"
             : event.type === "HISTORICAL_TRIGGERED"
               ? "迟到的历史技术参考，不是当前入场提醒"
-              : `收盘观察：${event.type}`,
+              : `${p.mode === "INTRABAR_CROSS" ? "盘中观察" : "收盘观察"}：${event.type}`,
         event.reasons,
         event.quantity ?? null,
         event.historical,

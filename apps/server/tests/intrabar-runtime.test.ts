@@ -107,6 +107,17 @@ describe("durable capability-gated intrabar runtime", () => {
     x.arm();
     x.packet(OPEN + 61000, ["100.6", "100.62"]);
     expect(entries(x)).toHaveLength(1);
+    expect(entries(x)[0].message).toContain("盘中穿越");
+    expect(entries(x)[0].message).toContain("收盘前可能回落");
+    expect(entries(x)[0].message).not.toContain("收盘确认");
+    expect(
+      x.store.events().find((e) => e.type === "RETEST_OBSERVED")?.message,
+    ).toBe("盘中观察：RETEST_OBSERVED");
+    expect(
+      x.store.db
+        .prepare("SELECT event_id FROM notifications WHERE event_id=?")
+        .get(entries(x)[0].id),
+    ).toEqual({ event_id: entries(x)[0].id });
     expect(x.runner.status(x.plan.id)).toMatchObject({
       mode: "INTRABAR_CROSS",
       status: "TRIGGERED",
@@ -415,4 +426,36 @@ describe("durable capability-gated intrabar runtime", () => {
     expect(x.runner.status(plan.id)?.status).toBe("ARMED");
     expect(entries(x)).toHaveLength(0);
   });
+  it.each([
+    ["100.7", "101", false],
+    ["101", "100.8", true],
+  ])(
+    "uses provider chain tail %s -> %s despite a same-time old packet replay",
+    async (oldPrice, tail, entry) => {
+      const x = await setup({
+        autoDrain: false,
+        planInput: { entryMax: "100.9" },
+      });
+      x.arm();
+      x.runner.drain();
+      const old = x.packet(OPEN + 61000, [oldPrice]);
+      x.packet(OPEN + 61000, ["100.6"]);
+      x.packet(OPEN + 61000, ["100.62", tail]);
+      x.adapter.sink.tickPacket!(old);
+      x.runner.drain();
+      expect(entries(x)).toHaveLength(entry ? 1 : 0);
+      const event = x.store
+        .events()
+        .find((e) => e.type === (entry ? "ENTRY_TRIGGERED" : "ENTRY_BLOCKED"))!;
+      expect(event).toBeDefined();
+      const snapshot = x.store.decisionInput(event.id);
+      expect(snapshot.riskInput).toMatchObject({ quote: { price: tail } });
+      expect(
+        auditDecisionInput({
+          snapshot,
+          expectedInputHash: event.snapshot.inputHash as string,
+        }).status,
+      ).toBe("MATCH");
+    },
+  );
 });

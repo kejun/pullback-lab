@@ -20,6 +20,7 @@ describe("formal closed-bar runtime", () => {
     expect(events.find((e) => e.type === "ENTRY_TRIGGERED")).toMatchObject({
       historical: false,
     });
+    expect(events.find(e => e.type === "ENTRY_TRIGGERED")?.message).toBe("收盘确认通过当前成交价估计与资金检查；价格不保证可成交，请人工核对");
     expect(x.store.plan(x.plan.id).status).toBe("TRIGGERED");
     expect(
       x.store.db
