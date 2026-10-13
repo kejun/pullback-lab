@@ -102,3 +102,5 @@ Linear 项目：<https://linear.app/kejunz/project/pullback-lab-回调交易研�
 生产行情装配、逐日历史覆盖校验与安全 probe 摘要命令见 [docs/production-market.md](docs/production-market.md)。默认关闭，`market:check` 不访问供应商。
 
 完整日期窗口的私有行情采集及独立 US/CN 日线研究见 [有界历史采集](docs/bounded-history.md) 与 [EOD 研究接线](docs/eod-research.md)。研究资格不代替实时监测资格；默认配置仍关闭。
+
+CN分钟来源的独立只读采样与单位/15:00边界诊断见 [docs/cn-minute-sources.md](docs/cn-minute-sources.md)。正式CN分钟能力仍待证。

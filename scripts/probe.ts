@@ -25,6 +25,7 @@ try {
       symbols: { type: "string" },
       "history-from": { type: "string" },
       "history-through": { type: "string" },
+      "minute-sources": { type: "boolean", default: false },
       summary: { type: "boolean", default: false },
       "observe-seconds": { type: "string", default: "0" },
       output: { type: "string" },
@@ -36,7 +37,9 @@ try {
     values["history-from"] !== undefined ||
     values["history-through"] !== undefined;
   // Full raw history must have a private, create-only journal. Never print it to terminal.
-  summary = values.summary! || historyRequested;
+  summary = values.summary! || historyRequested || values["minute-sources"]!;
+  if (values["minute-sources"] && (!values.output || historyRequested))
+    throw new Error("MINUTE_SOURCES_PRIVATE_OUTPUT_REQUIRED");
   if (
     historyRequested &&
     (!values["history-from"] || !values["history-through"] || !values.output)
@@ -53,6 +56,7 @@ try {
           },
         }
       : {}),
+    minuteSources: values["minute-sources"],
     symbols: (values.symbols ?? "")
       .split(",")
       .map((x) => x.trim())
@@ -75,7 +79,7 @@ try {
       if (output !== undefined) {
         const bytes = Buffer.from(`${JSON.stringify(report)}\n`);
         if (
-          historyRequested &&
+          (historyRequested || values["minute-sources"]) &&
           (bytes.length > HISTORY_MAX_CHECKPOINT_BYTES ||
             journalBytes + bytes.length > HISTORY_MAX_JOURNAL_BYTES)
         )

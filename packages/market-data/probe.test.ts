@@ -48,6 +48,7 @@ function fixture(overrides: Partial<ProbeOptions> = {}) {
         currency: "USD",
         lotSize: 1,
         rulesVerified: false as const,
+        securityBoard: 15,
       },
     ]),
     fetchQuotes: vi.fn(async (symbols: string[]) => [
@@ -62,6 +63,42 @@ function fixture(overrides: Partial<ProbeOptions> = {}) {
       }),
     ),
     observeConfirmed: vi.fn(async () => [bar]),
+    fetchMinuteSeed: vi.fn(
+      async (symbol: string, period: "1m" | "5m", _count: number) =>
+        Array.from({ length: 6 }, (_, i) => ({
+          ...bar,
+          symbol,
+          period,
+          timestamp: at - (i + 1) * 300000,
+          receivedAt: at,
+          finality: "UNKNOWN" as const,
+        })),
+    ),
+    observeTradeSources: vi.fn(async () => ({
+      status: "SAMPLED" as "SAMPLED" | "INCOMPLETE",
+      startedAt: at,
+      completedAt: at,
+      packets: [
+        {
+          symbol: "688008.SH",
+          receivedAt: at,
+          providerSequence: null,
+          trades: [
+            {
+              timestamp: at,
+              price: "10",
+              volume: "2",
+              tradeType: "",
+              direction: 0,
+              tradeSession: 0,
+            },
+          ],
+        },
+      ],
+      cleanup: "COMPLETE" as const,
+      reusable: true,
+      failure: undefined as undefined | "TRADE_SOURCE_SAMPLE_LIMIT",
+    })),
   };
   const factory = vi.fn(async () => adapter);
   const snapshots: ProbeReport[] = [];
@@ -354,5 +391,106 @@ describe("explicit date-window probe collection", () => {
     await expect(runMarketProbe(f.options)).rejects.toThrow("journal full");
     expect(f.adapter.fetchDailyHistoryPage).toHaveBeenCalledTimes(1);
     expect(f.adapter.calendarEvidence).not.toHaveBeenCalled();
+  });
+});
+
+describe("CN separate minute source probe", () => {
+  it("executes uncached seed and raw-trade endpoints, keeps all samples and never invokes mixed candles", async () => {
+    const f = fixture({ minuteSources: true, symbols: ["688008.SH"] });
+    const { report, exitCode } = await runMarketProbe(f.options);
+    expect(exitCode).toBe(2);
+    expect(f.adapter.fetchMinuteSeed.mock.calls).toEqual([
+      ["688008.SH", "1m", 60],
+      ["688008.SH", "5m", 60],
+    ]);
+    expect(f.adapter.fetchBars).not.toHaveBeenCalled();
+    expect(f.adapter.observeConfirmed).not.toHaveBeenCalled();
+    expect(f.adapter.observeTradeSources).toHaveBeenCalledWith(
+      ["688008.SH"],
+      1000,
+      50,
+    );
+    expect(report.minuteSourceCapture).toMatchObject({
+      status: "SAMPLED",
+      instruments: [{ symbol: "688008.SH", securityBoard: 15 }],
+    });
+    expect(
+      report.minuteSourceCapture!.seeds.every((s) => s.samples.length === 6),
+    ).toBe(true);
+    expect(report.minuteSourceCapture!.tradePackets[0].trades[0].volume).toBe(
+      "2",
+    );
+    expect(report.minuteSourceDiagnostic).toMatchObject({
+      liveEligible: false,
+    });
+    expect(report.capabilities.every((c) => c.level === "UNKNOWN")).toBe(true);
+    expect(f.snapshots.at(-1)).toEqual(report);
+  });
+  it.each([
+    { symbols: ["NVDA.US"] },
+    { observeSeconds: 0 },
+    { sdk: "5.3.0" },
+    { historyWindow: { from: "2026-10-01", through: "2026-10-12" } },
+    { checkpoint: undefined },
+  ])(
+    "rejects unsupported source-mode bounds before creating SDK context: %s",
+    async (overrides) => {
+      const f = fixture({
+        minuteSources: true,
+        symbols: ["688008.SH"],
+        ...overrides,
+      });
+      const { report } = await runMarketProbe(f.options);
+      expect(report.status).toBe("BLOCKED");
+      expect(f.factory).not.toHaveBeenCalled();
+    },
+  );
+  it("retains partial raw packets when bounded collection fails and returns no success", async () => {
+    const f = fixture({ minuteSources: true, symbols: ["688008.SH"] });
+    const value = await f.adapter.observeTradeSources();
+    f.adapter.observeTradeSources.mockResolvedValue({
+      ...value,
+      status: "INCOMPLETE",
+      failure: "TRADE_SOURCE_SAMPLE_LIMIT",
+    });
+    const { report, exitCode } = await runMarketProbe(f.options);
+    expect(exitCode).toBe(1);
+    expect(report.minuteSourceCapture?.status).toBe("INCOMPLETE");
+    expect(report.minuteSourceCapture!.tradePackets).toHaveLength(1);
+    expect(report.steps.at(-1)).toMatchObject({
+      status: "FAILED",
+      reason: "TRADE_SOURCE_SAMPLE_LIMIT",
+    });
+  });
+  it("retains empty-trade outcome without calling it entitlement failure", async () => {
+    const f = fixture({ minuteSources: true, symbols: ["688008.SH"] });
+    const value = await f.adapter.observeTradeSources();
+    f.adapter.observeTradeSources.mockResolvedValue({ ...value, packets: [] });
+    const { report } = await runMarketProbe(f.options);
+    expect(report.steps.at(-1)).toMatchObject({
+      status: "EMPTY",
+      reason: "NO_EVIDENCE_RETURNED",
+    });
+    expect(report.checks.entitlements).toBe("UNKNOWN");
+  });
+  it("marks capture incomplete after seed timeout and never starts another native request", async () => {
+    vi.useFakeTimers();
+    const f = fixture({ minuteSources: true, symbols: ["688008.SH"] });
+    f.adapter.fetchMinuteSeed.mockImplementationOnce(
+      () => new Promise(() => {}),
+    );
+    const result = runMarketProbe(f.options);
+    await vi.advanceTimersByTimeAsync(50);
+    const { report, exitCode } = await result;
+    expect(exitCode).toBe(1);
+    expect(report.minuteSourceCapture?.status).toBe("INCOMPLETE");
+    expect(f.adapter.observeTradeSources).not.toHaveBeenCalled();
+  });
+  it("cannot label failed native initialization as a collecting or completed capture", async () => {
+    const f = fixture({ minuteSources: true, symbols: ["688008.SH"] });
+    f.factory.mockRejectedValue(new Error("secret"));
+    const { report } = await runMarketProbe(f.options);
+    expect(report.minuteSourceCapture?.status).toBe("INCOMPLETE");
+    expect(report.minuteSourceCapture?.completedAt).toBe(at);
   });
 });
