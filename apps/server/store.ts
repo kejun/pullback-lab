@@ -392,6 +392,17 @@ export class Store {
     evidence: Record<string, unknown> = {},
   ) {
     return this.transaction(() => {
+      if (reason === "CORPORATE_ACTION_EVIDENCE_CHANGED") {
+        // Atomic with the immutable action generation and plan pause, even if no plan is active.
+        this.db
+          .prepare("DELETE FROM closed_sources WHERE instrument_id=?")
+          .run(instrumentId);
+        this.db
+          .prepare(
+            "UPDATE closed_streams SET healthy=0,reason=? WHERE instrument_id=?",
+          )
+          .run("CORPORATE_ACTION_CONTEXT_REVOKED", instrumentId);
+      }
       for (const p of this.plans()) {
         if (
           p.instrumentId !== instrumentId ||

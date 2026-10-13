@@ -1,3 +1,4 @@
+import { assertClosedActionEvidenceCurrent } from "./closed-action-binding.js";
 import {
   Config,
   Period,
@@ -145,6 +146,8 @@ export class LongbridgeClosedBarAdapter implements ClosedBarAdapter {
     return now;
   }
   private checkEvidence(): void {
+    for (const c of this.evidence)
+      assertClosedActionEvidenceCurrent(this.options.db, c);
     const now = this.checkClock();
     if (
       this.evidence.some(

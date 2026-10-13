@@ -1,5 +1,6 @@
 import type { IntrabarContract, TickPacket } from "./intrabar-contract.js";
 import { createHash } from "node:crypto";
+import { closedActionEvidenceCurrent } from "./closed-action-binding.js";
 import type Database from "better-sqlite3";
 import Decimal from "decimal.js";
 import type { Bar, Instrument } from "../../packages/contracts/index.js";
@@ -21,6 +22,8 @@ export interface ClosedBarContext {
   instrumentRulesId: string;
   dailyHistoryId: string;
   adjustmentEvidenceId: string;
+  /** Explicit reviewed local evidence generation. null/omitted means no local snapshot existed; never auto-bind current. */
+  actionEvidenceVersion?: string | null;
   capability: CapabilityEvidence;
   tickContract?: IntrabarContract;
   instrument: Instrument;
@@ -94,6 +97,12 @@ export function validateClosedContext(
     )
   )
     fail("CLOSED_PROVENANCE_MISSING");
+  if (
+    c.actionEvidenceVersion !== undefined &&
+    c.actionEvidenceVersion !== null &&
+    !/^action-evidence-v1:[a-f0-9]{64}$/.test(c.actionEvidenceVersion)
+  )
+    fail("CLOSED_ACTION_BINDING_INVALID");
   if (
     c.instrument.id.startsWith("DEMO-") ||
     c.instrument.rulesVerified !== true ||
@@ -218,6 +227,7 @@ export function trustedClosedSupport(
   if (!row) return null;
   const c = JSON.parse(row.json) as StoredClosedContext;
   if (
+    !closedActionEvidenceCurrent(db, c) ||
     c.basisKnownAt > now ||
     c.instrumentHash !== closedHash(instrument) ||
     c.dailyHash !== closedHash(bars) ||

@@ -5,6 +5,10 @@ import {
   type TickPacket,
   type TickCursor,
 } from "./intrabar-contract.js";
+import {
+  assertClosedActionEvidenceCurrent,
+  closedActionEvidenceCurrent,
+} from "./closed-action-binding.js";
 import { withDeadline } from "../../packages/market-data/deadline.js";
 import type { ClosedRiskInput } from "./closed-risk.js";
 import { randomUUID } from "node:crypto";
@@ -183,6 +187,8 @@ export class ClosedBarRuntime {
     const s = this.stream(this.connectionEpoch!, instrumentId);
     if (!s) error("CLOSED_INSTRUMENT_NOT_SUBSCRIBED");
     const c = this.context(s.context_id);
+    if (!closedActionEvidenceCurrent(this.store.db, c))
+      error("CORPORATE_ACTION_CONTEXT_REVOKED");
     if (
       !["LIVE_CLOSED_BAR", "LIVE_TICK"].includes(
         assessCapability(c.capability, this.now()).level,
@@ -224,26 +230,33 @@ export class ClosedBarRuntime {
           .prepare("SELECT * FROM closed_streams WHERE connection_epoch=?")
           .all(this.connectionEpoch) as Stream[])
       : [];
-    const instruments = streams.map((s) => ({
-      instrumentId: s.instrument_id,
-      liveEligible:
-        this.connected &&
-        Boolean(s.healthy) &&
-        ["LIVE_CLOSED_BAR", "LIVE_TICK"].includes(
-          assessCapability(this.context(s.context_id).capability, this.now())
-            .level,
-        ),
-      tickEligible:
-        this.connected &&
-        Boolean(s.healthy) &&
-        intrabarContractReason(this.context(s.context_id), this.now()) === null,
-      tickReason: !this.connected
-        ? "PROVIDER_DISCONNECTED"
-        : !s.healthy
-          ? s.reason
-          : intrabarContractReason(this.context(s.context_id), this.now()),
-      reason: s.reason,
-    }));
+    const instruments = streams.map((s) => {
+      const context = this.context(s.context_id);
+      const current = closedActionEvidenceCurrent(this.store.db, context);
+      return {
+        instrumentId: s.instrument_id,
+        liveEligible:
+          this.connected &&
+          Boolean(s.healthy) &&
+          current &&
+          ["LIVE_CLOSED_BAR", "LIVE_TICK"].includes(
+            assessCapability(context.capability, this.now()).level,
+          ),
+        tickEligible:
+          this.connected &&
+          Boolean(s.healthy) &&
+          current &&
+          intrabarContractReason(context, this.now()) === null,
+        tickReason: !current
+          ? "CORPORATE_ACTION_CONTEXT_REVOKED"
+          : !this.connected
+            ? "PROVIDER_DISCONNECTED"
+            : !s.healthy
+              ? s.reason
+              : intrabarContractReason(context, this.now()),
+        reason: current ? s.reason : "CORPORATE_ACTION_CONTEXT_REVOKED",
+      };
+    });
     const liveEligible = instruments.some((s) => s.liveEligible);
     return {
       configured: Boolean(this.options.adapter),
@@ -286,6 +299,7 @@ export class ClosedBarRuntime {
       this.store.transaction(() => {
         this.store.db.prepare("DELETE FROM closed_sources").run();
         for (const c of contexts) {
+          assertClosedActionEvidenceCurrent(this.store.db, c);
           const existing = this.store.instrument(c.instrument.id);
           this.store.db
             .prepare(
@@ -697,6 +711,7 @@ export class ClosedBarRuntime {
         capability: assessCapability(c.capability, now).level,
         dataHealthy:
           Boolean(stream.healthy) &&
+          closedActionEvidenceCurrent(this.store.db, c) &&
           !newerUnalignedQuote &&
           this.connected &&
           row.connection_epoch === this.connectionEpoch,
@@ -1076,6 +1091,14 @@ export class ClosedBarRuntime {
     )
       return "OLD_EPOCH_HISTORY_ONLY";
     const c = this.context(stream.context_id);
+    if (!closedActionEvidenceCurrent(this.store.db, c)) {
+      this.pauseStream(
+        stream,
+        "CORPORATE_ACTION_CONTEXT_REVOKED",
+        r.received_at,
+      );
+      return "ACTION_CONTEXT_REVOKED";
+    }
     if (
       !["LIVE_CLOSED_BAR", "LIVE_TICK"].includes(
         assessCapability(c.capability, this.now()).level,
@@ -1685,6 +1708,10 @@ export class ClosedBarRuntime {
           )
           .all(this.connectionEpoch) as Stream[]) {
           const c = this.context(s.context_id);
+          if (!closedActionEvidenceCurrent(this.store.db, c)) {
+            this.pauseStream(s, "CORPORATE_ACTION_CONTEXT_REVOKED", now);
+            continue;
+          }
           if (
             !["LIVE_CLOSED_BAR", "LIVE_TICK"].includes(
               assessCapability(c.capability, now).level,

@@ -26,6 +26,8 @@ import {
   type CalendarDay,
 } from "../../../packages/market-data/calendar.js";
 import { Store } from "../store.js";
+import { ActionEvidenceRepository } from "../../../packages/market-data/action-evidence.js";
+import { actionTestManifest } from "../../../packages/market-data/action-evidence-fixture.js";
 import {
   buildLongbridgeContext,
   type LongbridgeContextInput,
@@ -700,4 +702,123 @@ describe("production startup installation", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+it("production factory requires explicitly reviewed persistent action binding and consistent facts, never auto-binds current", () => {
+  const { input, now } = fixture();
+  const store = new Store(":memory:");
+  try {
+    store.putInstrument({
+      instrument: input.instrument,
+      manual: false,
+      note: "isolated",
+      tags: [],
+    });
+    const manifest = actionTestManifest();
+    manifest.instrumentId = input.instrument.id;
+    manifest.actions[0].effectiveAt = input.rawDaily[1].start;
+    manifest.coverage.through = now;
+    const version = store.importActionEvidence(manifest, now).version;
+    const env = { PULLBACK_CLOSED_BAR_MODE: "longbridge-close-confirm" };
+    const old = prepareProductionMarket(
+      { histories: [input], quota },
+      env,
+      () => now,
+    );
+    expect(() => old.factory!(store)).toThrow(
+      "CORPORATE_ACTION_CONTEXT_REVOKED",
+    );
+    input.actionEvidenceVersion = version;
+    input.adjustmentEvidenceId = version;
+    input.adjustments.actions = new ActionEvidenceRepository(store.db).dataset(
+      input.instrument.id,
+      now,
+      version,
+    )!.actions;
+    input.adjustments.coverage.knownAt = now;
+    const valid = prepareProductionMarket(
+      { histories: [input], quota },
+      env,
+      () => now,
+    );
+    expect(valid.factory!(store).contexts()[0].actionEvidenceVersion).toBe(
+      version,
+    );
+    const mismatch = structuredClone(input);
+    mismatch.adjustments.actions[0].sharesAfter = "3";
+    const bad = prepareProductionMarket(
+      { histories: [mismatch], quota },
+      env,
+      () => now,
+    );
+    expect(() => bad.factory!(store)).toThrow(
+      "HISTORY_ACTION_BINDING_MISMATCH",
+    );
+    manifest.expectedVersion = version;
+    manifest.coverage.status = "UNKNOWN";
+    store.importActionEvidence(manifest, now);
+    expect(() => valid.factory!(store)).toThrow(
+      "CORPORATE_ACTION_CONTEXT_REVOKED",
+    );
+  } finally {
+    store.close();
+  }
+});
+
+it("keeps withdrawn actions revoked through later snapshots and allows explicit reintroduction", () => {
+  const { input, now } = fixture();
+  const store = new Store(":memory:");
+  try {
+    store.putInstrument({
+      instrument: input.instrument,
+      manual: false,
+      note: "isolated",
+      tags: [],
+    });
+    const manifest = actionTestManifest();
+    manifest.instrumentId = input.instrument.id;
+    manifest.actions[0].effectiveAt = input.rawDaily[1].start;
+    manifest.coverage.through = now;
+    const original = structuredClone(manifest.actions);
+    const v1 = store.importActionEvidence(manifest, now).version;
+    input.adjustments.actions = new ActionEvidenceRepository(store.db).dataset(
+      input.instrument.id,
+      now,
+      v1,
+    )!.actions;
+    input.adjustments.coverage.knownAt = now;
+    const build = () =>
+      prepareProductionMarket(
+        { histories: [input], quota },
+        { PULLBACK_CLOSED_BAR_MODE: "longbridge-close-confirm" },
+        () => now,
+      ).factory!(store);
+    manifest.expectedVersion = v1;
+    manifest.actions = [];
+    manifest.removedActionIds = original.map((a) => a.id);
+    input.actionEvidenceVersion = store.importActionEvidence(
+      manifest,
+      now,
+    ).version;
+    expect(build).toThrow("HISTORY_ACTION_BINDING_MISMATCH");
+    manifest.expectedVersion = input.actionEvidenceVersion;
+    manifest.removedActionIds = [];
+    manifest.coverage.reason = "isolated unrelated later review";
+    input.actionEvidenceVersion = store.importActionEvidence(
+      manifest,
+      now,
+    ).version;
+    expect(build).toThrow("HISTORY_ACTION_BINDING_MISMATCH");
+    manifest.expectedVersion = input.actionEvidenceVersion;
+    manifest.actions = original;
+    input.actionEvidenceVersion = store.importActionEvidence(
+      manifest,
+      now,
+    ).version;
+    expect(build().contexts()[0].actionEvidenceVersion).toBe(
+      input.actionEvidenceVersion,
+    );
+  } finally {
+    store.close();
+  }
 });

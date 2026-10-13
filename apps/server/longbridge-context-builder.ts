@@ -25,6 +25,8 @@ export interface LongbridgeContextInput {
   probeReportId: string;
   instrumentRulesId: string;
   adjustmentEvidenceId: string;
+  /** Reviewed binding to the existing local immutable action snapshot; never copy automatically at startup. */
+  actionEvidenceVersion?: string | null;
   instrument: Instrument;
   capability: CapabilityEvidence;
   historyStartDate: string;
@@ -56,6 +58,12 @@ export function buildLongbridgeContext(
   now: number,
 ): ClosedBarContext {
   const c = structuredClone(input);
+  const actionVersion = c.actionEvidenceVersion ?? null;
+  if (
+    actionVersion !== null &&
+    !/^action-evidence-v1:[a-f0-9]{64}$/.test(actionVersion)
+  )
+    fail("HISTORY_ACTION_BINDING_MISMATCH");
   if (!Number.isSafeInteger(now) || now < 0) fail("HISTORY_CUTOFF_INVALID");
   const from = dateAt(c.historyStartDate),
     through = dateAt(c.basisDate);
@@ -183,6 +191,7 @@ export function buildLongbridgeContext(
     probeReportId: c.probeReportId,
     instrumentRulesId: c.instrumentRulesId,
     adjustmentEvidenceId: c.adjustmentEvidenceId,
+    actionEvidenceVersion: actionVersion,
     dailyHistoryId: `longbridge-daily:${closedHash({ calendar: selectedCalendar, bars, adjustments: c.adjustments, historyStartDate: c.historyStartDate, basisDate: c.basisDate })}`,
     instrument: c.instrument,
     capability: {
