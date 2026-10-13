@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, statfsSync } from "node:fs";
-import { availableParallelism, cpus, platform, release, tmpdir } from "node:os";
+import { availableParallelism, cpus, platform, release } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import Database from "better-sqlite3";
@@ -229,7 +229,9 @@ export async function runFormalBenchmark({
       encoding: "utf8",
     }).trim(),
   };
-  const directory = mkdtempSync(join(tmpdir(), "pullback-formal-benchmark-"));
+  // Use the checkout filesystem, not /tmp: cloud /tmp may be tmpfs and would
+  // measure memory-backed storage despite using the real SQLite file API.
+  const directory = mkdtempSync(join(process.cwd(), ".formal-benchmark-"));
   const filesystemTypeHex = `0x${statfsSync(directory).type.toString(16)}`;
   const cold: BenchmarkSample[] = [],
     warm: BenchmarkSample[] = [],
@@ -515,7 +517,7 @@ export async function runFormalBenchmark({
       cpu: cpus()[0]?.model ?? "unknown",
       availableParallelism: availableParallelism(),
       database: {
-        kind: "separate temporary file per round",
+        kind: "separate temporary file per round on the checkout filesystem",
         journalMode: "wal",
         synchronous: "FULL",
         independentReadOnlyConnection: true,
@@ -565,7 +567,7 @@ export async function runFormalBenchmark({
       "Fixture context synthetic=false is the isolated adapter contract required to test the formal branch; it does not make the generated market data real or enable production capabilities.",
       "No historical replayPlan call is used. Archive audit is read-only and excluded from measured input-to-commit latency.",
       "No provider/network, socket transport, browser rendering, SSE delivery, target-host disk, physical power loss or simultaneous OS-process contention is measured.",
-      "Thirty independent fresh-database rounds measure a fixed first opportunity, not long-running session/database growth or all timing paths. WAL/FULL configuration is verified, not physical durability.",
+      "Independent fresh-database rounds measure a fixed first opportunity, not long-running session/database growth or all timing paths. WAL/FULL configuration is verified, not physical durability; the filesystem type is recorded and the cloud host is not isolated from other work.",
     ],
   };
 }
