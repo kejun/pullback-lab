@@ -1,3 +1,10 @@
+import {
+  intrabarContractReason,
+  tickToken,
+  validateTickPacket,
+  type TickPacket,
+  type TickCursor,
+} from "./intrabar-contract.js";
 import { withDeadline } from "../../packages/market-data/deadline.js";
 import type { ClosedRiskInput } from "./closed-risk.js";
 import { randomUUID } from "node:crypto";
@@ -92,7 +99,7 @@ function error(
   throw new ApiError(422, code, message);
 }
 
-/** Durable ingress and formal closed-bar execution. No route accepts market inputs or adapter evidence. */
+/** Durable formal bar/tick execution. No route accepts market inputs or adapter evidence. */
 export class ClosedBarRuntime {
   private readonly now: () => number;
   private readonly epoch: string;
@@ -200,6 +207,7 @@ export class ClosedBarRuntime {
       status: s.status,
       reason: s.reason,
       template: c.template,
+      mode: c.mode,
       sourceAttemptId: row.source_attempt_id,
       activatedAt: c.activatedAt,
       watermark: row.watermark,
@@ -225,6 +233,15 @@ export class ClosedBarRuntime {
           assessCapability(this.context(s.context_id).capability, this.now())
             .level,
         ),
+      tickEligible:
+        this.connected &&
+        Boolean(s.healthy) &&
+        intrabarContractReason(this.context(s.context_id), this.now()) === null,
+      tickReason: !this.connected
+        ? "PROVIDER_DISCONNECTED"
+        : !s.healthy
+          ? s.reason
+          : intrabarContractReason(this.context(s.context_id), this.now()),
       reason: s.reason,
     }));
     const liveEligible = instruments.some((s) => s.liveEligible);
@@ -292,6 +309,7 @@ export class ClosedBarRuntime {
       this.connectionEpoch = epoch;
 
       const sink: ClosedBarSink = {
+        tickPacket: (v) => this.receive(epoch, "TICK_PACKET", v),
         minute: (v) => this.receive(epoch, "MINUTE", v),
         quote: (v) => this.receive(epoch, "QUOTE", v),
         noTrade: (v) => this.receive(epoch, "NO_TRADE", v),
@@ -413,7 +431,11 @@ export class ClosedBarRuntime {
   private receive(
     epoch: string,
     kind: string,
-    value: ClosedMinute | ClosedQuote | Parameters<ClosedBarSink["noTrade"]>[0],
+    value:
+      | ClosedMinute
+      | ClosedQuote
+      | TickPacket
+      | Parameters<ClosedBarSink["noTrade"]>[0],
   ): void {
     // Old callbacks are fenced by the captured subscription identity, including callbacks after stop.
     if (
@@ -585,10 +607,16 @@ export class ClosedBarRuntime {
     } as AttemptInput;
     let risk: RiskResult | null = null;
     let riskInput: ClosedRiskInput | undefined;
-    if (input.type === "BAR") {
-      const quotes = this.knownQuotes(row, now).filter(
-        (x) => x.q.at >= config.activatedAt,
-      );
+    if (
+      input.type === "BAR" ||
+      (input.type === "TICK" && config.mode === "INTRABAR_CROSS")
+    ) {
+      const quotes = [
+        ...this.knownQuotes(row, now),
+        ...(config.mode === "INTRABAR_CROSS"
+          ? this.knownTickQuotes(row, now)
+          : []),
+      ].filter((x) => x.q.at >= config.activatedAt);
       const latest = quotes
         .toSorted((a, b) => a.q.at - b.q.at || a.r.seq - b.r.seq)
         .at(-1)?.q;
@@ -644,9 +672,11 @@ export class ClosedBarRuntime {
       risk = this.store.closedRisk(p, now, latest, config.sessionOpenAt);
       input.gates = {
         decisionAt: now,
-        ...(raw.type === "BAR" &&
-        "historical" in raw.bar &&
-        raw.bar.historical === true
+        ...((raw.type === "BAR" &&
+          "historical" in raw.bar &&
+          raw.bar.historical === true) ||
+        (raw.type === "TICK" &&
+          (now >= previous.deadline || now - raw.tick.at > 3000))
           ? { historical: true }
           : {}),
         capability: assessCapability(c.capability, now).level,
@@ -661,18 +691,20 @@ export class ClosedBarRuntime {
           reasons: risk.reasons,
           quantity: risk.quantity,
         },
-        ...(bars.length
-          ? {
-              lod: {
-                price: Decimal.min(...bars.map((b) => b.low)).toFixed(),
-                from: stream.from_at,
-                through: stream.through_at,
-                complete:
-                  stream.from_at === config.sessionOpenAt &&
-                  Boolean(stream.healthy),
-              },
-            }
-          : {}),
+        ...(config.mode === "INTRABAR_CROSS"
+          ? this.tickLow(stream, config.sessionOpenAt)
+          : bars.length
+            ? {
+                lod: {
+                  price: Decimal.min(...bars.map((b) => b.low)).toFixed(),
+                  from: stream.from_at,
+                  through: stream.through_at,
+                  complete:
+                    stream.from_at === config.sessionOpenAt &&
+                    Boolean(stream.healthy),
+                },
+              }
+            : {}),
       };
     }
     const reduced = reduceAttempt(previous, input, config),
@@ -704,7 +736,8 @@ export class ClosedBarRuntime {
       : [];
     const snapshot = {
       algorithmVersion: "pullback-c01-c07-v1",
-      runtimeVersion: "closed-bar-v1",
+      runtimeVersion:
+        config.mode === "INTRABAR_CROSS" ? "intrabar-v1" : "closed-bar-v1",
       synthetic: false,
       contextId: row.context_id,
       context: this.context(row.context_id),
@@ -833,6 +866,186 @@ export class ClosedBarRuntime {
         );
     }
   }
+  private tickCursor(stream: Stream): TickCursor | null {
+    const row = this.store.db
+      .prepare(
+        "SELECT cursor_json FROM tick_packets WHERE connection_epoch=? AND instrument_id=? ORDER BY receipt_seq DESC LIMIT 1",
+      )
+      .get(stream.connection_epoch, stream.instrument_id) as
+      { cursor_json: string } | undefined;
+    return row ? decode<TickCursor>(row.cursor_json) : null;
+  }
+  private tickTrades(stream: Stream): TickPacket["trades"] {
+    return (
+      this.store.db
+        .prepare(
+          "SELECT t.json FROM tick_trades t JOIN closed_receipts r ON r.seq=t.receipt_seq WHERE r.connection_epoch=? AND r.instrument_id=? ORDER BY r.seq,t.position",
+        )
+        .all(stream.connection_epoch, stream.instrument_id) as {
+        json: string;
+      }[]
+    ).map((r) => decode<TickPacket["trades"][number]>(r.json));
+  }
+  private tickLow(stream: Stream, sessionOpenAt: number) {
+    const cursor = this.tickCursor(stream),
+      trades = this.tickTrades(stream);
+    return cursor && trades.length
+      ? {
+          lod: {
+            price: Decimal.min(...trades.map((t) => t.price)).toFixed(),
+            from: cursor.coverageFrom,
+            through: cursor.coverageThrough,
+            complete:
+              cursor.coverageFrom === sessionOpenAt && Boolean(stream.healthy),
+          },
+        }
+      : {};
+  }
+  /** Only server-installed protocol packets enter here; preflight validates all known queued packets before any action. */
+  private knownTickQuotes(
+    row: Row,
+    decisionAt: number,
+  ): Array<{ q: ClosedQuote; r: Receipt }> {
+    const c = this.context(row.context_id);
+    return (
+      this.store.db
+        .prepare(
+          "SELECT * FROM closed_receipts WHERE connection_epoch=? AND instrument_id=? AND kind='TICK_PACKET' AND seq>? AND received_at<=? ORDER BY seq",
+        )
+        .all(
+          row.connection_epoch,
+          c.instrument.id,
+          row.activation_seq,
+          decisionAt,
+        ) as Receipt[]
+    ).flatMap((r) => {
+      const packet = decode<TickPacket>(r.payload_json);
+      return packet.trades.map((t) => ({
+        r,
+        q: {
+          instrumentId: packet.instrumentId,
+          sessionId: packet.sessionId,
+          source: packet.source,
+          id: tickToken(packet, t.position),
+          price: t.price,
+          at: t.at,
+        },
+      }));
+    });
+  }
+  private processTickPacket(
+    r: Receipt,
+    stream: Stream,
+    c: StoredClosedContext,
+  ): string {
+    const packet = decode<TickPacket>(r.payload_json);
+    if (!stream.healthy) return "PAUSED_HISTORY_ONLY";
+    if (intrabarContractReason(c, this.now())) {
+      this.pauseStream(
+        stream,
+        "TICK_PROTOCOL_EVIDENCE_UNVERIFIED",
+        r.received_at,
+      );
+      return "TICK_CAPABILITY_PAUSED";
+    }
+    const prior = this.store.db
+      .prepare(
+        "SELECT payload_hash FROM tick_packets WHERE connection_epoch=? AND instrument_id=? AND provider_epoch=? AND provider_sequence=?",
+      )
+      .get(
+        r.connection_epoch,
+        r.instrument_id,
+        packet.providerEpoch,
+        packet.providerSequence,
+      ) as { payload_hash: string } | undefined;
+    if (prior) {
+      if (prior.payload_hash === r.payload_hash) return "DUPLICATE";
+      this.pauseStream(stream, "TICK_PACKET_CONFLICT", r.received_at);
+      return "TICK_CONFLICT";
+    }
+    const previous = this.tickCursor(stream);
+    let cursor: TickCursor;
+    try {
+      cursor = validateTickPacket(packet, c, r.received_at, previous);
+    } catch (error) {
+      this.pauseStream(
+        stream,
+        error instanceof Error ? error.message : "TICK_PACKET_INVALID",
+        r.received_at,
+      );
+      return "TICK_REJECTED";
+    }
+    this.store.db
+      .prepare("INSERT INTO tick_packets VALUES(?,?,?,?,?,?,?)")
+      .run(
+        r.connection_epoch,
+        r.instrument_id,
+        packet.providerEpoch,
+        packet.providerSequence,
+        r.seq,
+        r.payload_hash,
+        encode(cursor),
+      );
+    for (const trade of packet.trades)
+      this.store.db
+        .prepare("INSERT INTO tick_trades VALUES(?,?,?,?)")
+        .run(
+          r.seq,
+          trade.position,
+          tickToken(packet, trade.position),
+          encode(trade),
+        );
+    for (let row of this.rows().filter(
+      (row) =>
+        row.connection_epoch === r.connection_epoch &&
+        row.context_id === c.id &&
+        row.phase === "RUNNING" &&
+        decode<AttemptConfig>(row.config_json).mode === "INTRABAR_CROSS",
+    )) {
+      const config = decode<AttemptConfig>(row.config_json);
+      if (
+        cursor.coverageFrom > Math.max(config.sessionOpenAt, config.activatedAt)
+      ) {
+        this.accept(
+          row,
+          {
+            type: "DATA_GAP",
+            id: `tick-anchor:${r.seq}`,
+            receivedAt: r.received_at,
+            reason: "TICK_ACTIVATION_COVERAGE_GAP",
+          },
+          r.seq,
+        );
+        continue;
+      }
+      let previousToken = previous?.lastTradeToken ?? null;
+      for (const trade of packet.trades) {
+        const sequence = tickToken(packet, trade.position);
+        this.accept(
+          row,
+          {
+            type: "TICK",
+            id: `tick:${r.seq}:${trade.position}`,
+            receivedAt: r.received_at,
+            tick: {
+              price: trade.price,
+              at: trade.at,
+              sessionId: packet.sessionId,
+              evidenceEpoch: config.evidenceEpoch,
+              sequence,
+              previousSequence: previousToken,
+              orderVerified: true,
+              continuityVerified: true,
+            },
+          },
+          r.seq,
+        );
+        previousToken = sequence;
+        row = this.row(row.attempt_id);
+      }
+    }
+    return "TICK_ACCEPTED";
+  }
   private process(r: Receipt): string {
     const stream = this.stream(r.connection_epoch, r.instrument_id);
     if (
@@ -851,6 +1064,7 @@ export class ClosedBarRuntime {
       this.pauseStream(stream, "LIVE_CAPABILITY_UNVERIFIED", r.received_at);
       return "CAPABILITY_PAUSED";
     }
+    if (r.kind === "TICK_PACKET") return this.processTickPacket(r, stream, c);
     if (r.kind === "QUOTE") {
       const q = this.validQuote(r, c);
       if (!q) {
@@ -1053,9 +1267,49 @@ export class ClosedBarRuntime {
       return closedHash(value);
     };
     let through = stream.through_at;
+    let tickCursor = this.tickCursor(stream);
+    const tickHashes = new Map(
+      (
+        this.store.db
+          .prepare(
+            "SELECT provider_epoch,provider_sequence,payload_hash FROM tick_packets WHERE connection_epoch=? AND instrument_id=?",
+          )
+          .all(stream.connection_epoch, stream.instrument_id) as {
+          provider_epoch: string;
+          provider_sequence: string;
+          payload_hash: string;
+        }[]
+      ).map((p) => [
+        JSON.stringify([p.provider_epoch, p.provider_sequence]),
+        p.payload_hash,
+      ]),
+    );
     for (const item of pending) {
       let reason: string | null = null;
-      if (item.kind === "QUOTE") {
+      if (item.kind === "TICK_PACKET") {
+        try {
+          const packet = decode<TickPacket>(item.payload_json);
+          const key = JSON.stringify([
+            packet.providerEpoch,
+            packet.providerSequence,
+          ]);
+          const prior = tickHashes.get(key);
+          if (prior) {
+            if (prior !== item.payload_hash) reason = "TICK_PACKET_CONFLICT";
+          } else {
+            tickCursor = validateTickPacket(
+              packet,
+              context,
+              item.received_at,
+              tickCursor,
+            );
+            tickHashes.set(key, item.payload_hash);
+          }
+        } catch (error) {
+          reason =
+            error instanceof Error ? error.message : "TICK_PACKET_INVALID";
+        }
+      } else if (item.kind === "QUOTE") {
         if (!this.validQuote(item, context)) reason = "QUOTE_CONTRACT_INVALID";
       } else if (item.kind === "MINUTE") {
         try {
@@ -1186,7 +1440,14 @@ export class ClosedBarRuntime {
         stream = this.stream(this.connectionEpoch!, p.instrumentId)!;
       if (!stream.healthy) error("DATA_NOT_HEALTHY");
       if (p.researchHistoryId) error("HISTORICAL_RESEARCH_ONLY");
-      if (p.mode !== "CLOSE_CONFIRM") error("TICK_CAPABILITY_UNVERIFIED");
+      if (p.mode === "INTRABAR_CROSS") {
+        const reason = intrabarContractReason(c, now);
+        if (reason)
+          error(
+            reason,
+            "连续逐笔协议、原始序号及实际部署证据尚未核验，盘中模式不可启用",
+          );
+      }
       if (p.sessionDate !== c.session.date) error("CLOSED_SESSION_MISMATCH");
       if (!p.backgroundConfirmed || !p.reason.trim())
         error("BACKGROUND_UNCONFIRMED");
@@ -1234,10 +1495,28 @@ export class ClosedBarRuntime {
             "本会话已有尝试，请显式新建恢复尝试",
           );
         if (now > c.session.open) {
-          if (stream.from_at !== c.session.open || stream.through_at < now)
-            error("SESSION_HISTORY_INCOMPLETE");
-          if (this.minutes(stream).some((b) => new Decimal(b.low).lte(p.upper)))
-            error("EARLIER_RETEST_ALREADY_OBSERVED");
+          if (p.mode === "INTRABAR_CROSS") {
+            const cursor = this.tickCursor(stream);
+            if (
+              !cursor ||
+              cursor.coverageFrom !== c.session.open ||
+              cursor.coverageThrough < now
+            )
+              error("SESSION_HISTORY_INCOMPLETE");
+            if (
+              this.tickTrades(stream).some((t) =>
+                new Decimal(t.price).lte(p.upper),
+              )
+            )
+              error("EARLIER_RETEST_ALREADY_OBSERVED");
+          } else {
+            if (stream.from_at !== c.session.open || stream.through_at < now)
+              error("SESSION_HISTORY_INCOMPLETE");
+            if (
+              this.minutes(stream).some((b) => new Decimal(b.low).lte(p.upper))
+            )
+              error("EARLIER_RETEST_ALREADY_OBSERVED");
+          }
         }
       }
       const activated = this.store.activate(
@@ -1264,7 +1543,7 @@ export class ClosedBarRuntime {
         sessionOpenAt: c.session.open,
         sessionCloseAt: c.session.close,
         activatedAt: Math.max(now, source?.watermark ?? now),
-        mode: "CLOSE_CONFIRM",
+        mode: p.mode,
         lower: version.lower,
         upper: version.upper,
         stop: version.stop,
@@ -1291,7 +1570,7 @@ export class ClosedBarRuntime {
       ).n;
       this.store.db.prepare("UPDATE attempts SET json=? WHERE id=?").run(
         encode({
-          kind: "LIVE_CLOSED_BAR",
+          kind: p.mode === "INTRABAR_CROSS" ? "LIVE_TICK" : "LIVE_CLOSED_BAR",
           startedAt: now,
           version: p.version,
           approvedQuantity: plan.approvedQuantity,
@@ -1366,10 +1645,16 @@ export class ClosedBarRuntime {
             id: `external:pause:${now}`,
             receivedAt: now,
           });
-        if (now > state.deadline + 30_000 && row.deadline_watermark === null)
+        const mode = decode<AttemptConfig>(row.config_json).mode;
+        if (
+          (mode === "INTRABAR_CROSS"
+            ? now >= state.deadline
+            : now > state.deadline + 30_000) &&
+          row.deadline_watermark === null
+        )
           this.accept(this.row(row.attempt_id), {
             type: "CLOCK",
-            id: `clock:${state.deadline + 30_001}`,
+            id: `clock:${state.deadline}:${mode}`,
             receivedAt: now,
           });
       }
@@ -1386,6 +1671,18 @@ export class ClosedBarRuntime {
             )
           )
             this.pauseStream(s, "LIVE_CAPABILITY_UNVERIFIED", now);
+          else if (
+            this.rows().some(
+              (row) =>
+                row.connection_epoch === s.connection_epoch &&
+                row.context_id === s.context_id &&
+                row.phase === "RUNNING" &&
+                decode<AttemptConfig>(row.config_json).mode ===
+                  "INTRABAR_CROSS",
+            ) &&
+            intrabarContractReason(c, now)
+          )
+            this.pauseStream(s, "TICK_PROTOCOL_EVIDENCE_UNVERIFIED", now);
           else if (
             s.through_at <
               Math.min(c.session.open + 60 * minute, c.session.close) &&

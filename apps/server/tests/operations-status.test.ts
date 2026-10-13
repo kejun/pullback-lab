@@ -81,7 +81,7 @@ describe("authenticated operations status", () => {
     expect(report).toMatchObject({
       reportVersion: 1,
       capturedAt: NOW,
-      runtime: { schemaVersion: 11, journalMode: "memory", synchronous: "FULL" },
+      runtime: { schemaVersion: 12, journalMode: "memory", synchronous: "FULL" },
       disk: null,
       security: {
         secureCookiesConfigured: false,

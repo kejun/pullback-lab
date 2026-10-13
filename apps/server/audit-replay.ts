@@ -459,7 +459,9 @@ export function auditDecisionInput(input: AuditReplayInput): AuditReplayResult {
     result.status = "MATCH";
     return result;
   }
-  if (snapshot.runtimeVersion === "closed-bar-v1") {
+  if (
+    ["closed-bar-v1", "intrabar-v1"].includes(snapshot.runtimeVersion as string)
+  ) {
     const riskInput = snapshot.riskInput;
     if (
       !object(riskInput) ||
@@ -497,9 +499,13 @@ export function auditDecisionInput(input: AuditReplayInput): AuditReplayResult {
             ? { price: frozen.quote.price, at: frozen.quote.at }
             : undefined,
         ) !==
-          canonical(latest?.type === "BAR" ? latest.gates?.quote : undefined) ||
+          canonical(
+            latest?.type === "BAR" || latest?.type === "TICK"
+              ? latest.gates?.quote
+              : undefined,
+          ) ||
         frozen.decisionAt !== snapshot.decisionTime ||
-        latest?.type !== "BAR" ||
+        (latest?.type !== "BAR" && latest?.type !== "TICK") ||
         latest.gates?.decisionAt !== frozen.decisionAt
       )
         throw new Error("RISK_FROZEN_CONTEXT_MISMATCH");

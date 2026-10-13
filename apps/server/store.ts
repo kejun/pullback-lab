@@ -1188,9 +1188,11 @@ export class Store {
       p.attemptId !== attemptId ||
       state.attemptId !== attemptId ||
       state.planVersion !== expectedVersion ||
-      snapshot.runtimeVersion !== "closed-bar-v1" ||
+      snapshot.runtimeVersion !==
+        (p.mode === "INTRABAR_CROSS" ? "intrabar-v1" : "closed-bar-v1") ||
       snapshot.contextId !== checkpoint.context_id ||
-      JSON.parse(attempt.json).kind !== "LIVE_CLOSED_BAR"
+      JSON.parse(attempt.json).kind !==
+        (p.mode === "INTRABAR_CROSS" ? "LIVE_TICK" : "LIVE_CLOSED_BAR")
     )
       throw new ApiError(
         409,

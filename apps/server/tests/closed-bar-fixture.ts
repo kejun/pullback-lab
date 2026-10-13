@@ -164,11 +164,13 @@ export async function setupClosed(
     autoDrain?: boolean;
     activate?: boolean;
     planInput?: Partial<PlanInput>;
+    context?: Partial<ClosedBarContext>;
   } = {},
 ) {
   let now = OPEN - 1;
   const store = new Store(options.path);
   const adapter = new ContractAdapter();
+  Object.assign(adapter.context, options.context);
   store.putInstrument({
     instrument: adapter.context.instrument,
     manual: true,

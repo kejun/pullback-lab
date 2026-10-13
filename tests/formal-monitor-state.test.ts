@@ -25,7 +25,15 @@ const snapshot: MonitorSnapshot = {
     connected: true,
     liveEligible: true,
     reason: "SERVER_ADAPTER_CONNECTED",
-    instruments: [{ instrumentId: "US-A", liveEligible: true, reason: null }],
+    instruments: [
+      {
+        instrumentId: "US-A",
+        liveEligible: true,
+        tickEligible: false,
+        tickReason: "TICK_CAPABILITY_UNVERIFIED",
+        reason: null,
+      },
+    ],
   },
   progress: null,
 };
@@ -37,6 +45,7 @@ const progress: NonNullable<MonitorSnapshot["progress"]> = {
   status: "DATA_PAUSED",
   reason: "MISSING_MINUTE",
   template: "SESSION_FIRST",
+  mode: "CLOSE_CONFIRM",
   sourceAttemptId: null,
   activatedAt: 1,
   watermark: 123,

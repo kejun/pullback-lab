@@ -1,3 +1,4 @@
+import type { IntrabarContract, TickPacket } from "./intrabar-contract.js";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import Decimal from "decimal.js";
@@ -21,6 +22,7 @@ export interface ClosedBarContext {
   dailyHistoryId: string;
   adjustmentEvidenceId: string;
   capability: CapabilityEvidence;
+  tickContract?: IntrabarContract;
   instrument: Instrument;
   calendar: CalendarDay;
   /** Complete, split-only adjusted daily history on the target session's raw price basis. */
@@ -42,6 +44,8 @@ export interface ClosedQuote {
   at: number;
 }
 export interface ClosedBarSink {
+  /** Optional provider capability. Never derive these packets from quotes or OHLC. */
+  tickPacket?(value: TickPacket): void;
   minute(value: ClosedMinute): void;
   quote(value: ClosedQuote): void;
   /** Explicit no-trade coverage is preserved, but never fabricated into OHLC. */
