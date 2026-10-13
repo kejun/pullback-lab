@@ -492,3 +492,12 @@ it("rejects a provider quote outside its verified regular-session intervals", as
     false,
   );
 });
+
+
+it("reports the attempt session from its frozen context after the plan changes date", async () => {
+  const x = await setup();
+  const previous = x.runner.status(x.plan.id);
+  expect(previous?.sessionDate).toBe("2026-10-09");
+  x.store.updatePlan(x.plan.id, { ...x.plan, sessionDate: "2026-10-12" }, x.plan.version, x.now());
+  expect(x.runner.status(x.plan.id)).toMatchObject({ sessionDate: "2026-10-09", attemptId: previous!.attemptId, current: false });
+});

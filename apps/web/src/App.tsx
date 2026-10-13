@@ -39,6 +39,7 @@ import type {
 import type { ChartPriceProposal, PlanPriceField } from "./chart-price";
 import { useEventFeed } from "./useEventFeed";
 import { SyntheticRuntime } from "./SyntheticRuntime";
+import { FormalMonitor } from "./FormalMonitor";
 import { SupportEditor } from "./SupportEditor";
 import { PlanControlsEditor, feeFields } from "./PlanControlsEditor";
 import { MarketStatus } from "./MarketStatus";
@@ -496,7 +497,7 @@ export default function App() {
   const priceProposalSeq = useRef(0);
   const priceProposalContext = useRef("");
   const refreshSeq = useRef(0);
-  async function refresh(updateSelected = false) {
+  async function refresh(updateSelected = false, signal?: AbortSignal) {
     const editing = planEditSeq.current;
     const mayUpdateSelected =
       updateSelected && !dirty && conflictReview?.target.kind !== "plan";
@@ -508,10 +509,11 @@ export default function App() {
       let response: [Bootstrap, CandidatePage, UniverseSnapshot] | null = null;
       for (let attempt = 0; attempt < 3; attempt++) {
         const values = await Promise.all([
-          api<Bootstrap>("/bootstrap"),
-          api<CandidatePage>("/candidates"),
-          api<UniverseSnapshot>("/universe"),
+          api<Bootstrap>("/bootstrap", "GET", undefined, { signal }),
+          api<CandidatePage>("/candidates", "GET", undefined, { signal }),
+          api<UniverseSnapshot>("/universe", "GET", undefined, { signal }),
         ]);
+        if (signal?.aborted) throw new Error("状态刷新超时或已取消，请重试读取。");
         if (requested !== refreshSeq.current) return;
         const [bootstrap, page, list] = values;
         if (
@@ -529,6 +531,7 @@ export default function App() {
           "列表或筛选规则连续发生变更，未覆盖当前结果，请稍后刷新",
         );
       const [b, c, u] = response;
+      if (signal?.aborted) throw new Error("状态刷新超时或已取消，请重试读取。");
       if (requested !== refreshSeq.current) return;
       setBoot(b);
       setCandidates(c.candidates);
@@ -557,6 +560,7 @@ export default function App() {
           setRisk(null);
       }
     } catch (error) {
+      if (signal?.aborted) throw error;
       if (requested !== refreshSeq.current) return;
       setCandidateError(
         error instanceof Error ? error.message : "候选结果读取失败",
@@ -2643,7 +2647,7 @@ export default function App() {
                           >
                             检查风险数量
                           </button>
-                          {savedPlan &&
+                          {(!savedPlan || isSyntheticPlan) && (savedPlan &&
                           ["WAIT_RETEST", "ARMED", "ACTIVE"].includes(
                             savedPlan.status,
                           ) ? (
@@ -2756,16 +2760,25 @@ export default function App() {
                               }
                             >
                               <Icon name="play" size={15} />
-                              {boot.demo ? "启用合成计划观察" : "启用观察"}
+                              {isSyntheticPlan ? "启用合成计划观察" : "保存后启用观察"}
                             </button>
-                          )}
+                          ))}
                         </div>
+                        {savedPlan && !isSyntheticPlan && (
+                          <FormalMonitor
+                            key={`formal:${runtimeKey}`}
+                            plan={savedPlan}
+                            disabled={busy || dirty || Boolean(chartHistoryOverride) || conflictReview?.target.kind === "plan"}
+                            onBusyChange={setBusy}
+                            onChanged={(signal) => refresh(true, signal)}
+                          />
+                        )}
                         {savedPlan && !savedPlan.supportSnapshot?.ready && (
                           <small className="disabled-reason">
                             已保存版本缺少完整支撑证据。请选择有效家族并保存新版本。
                           </small>
                         )}
-                        {!!monitorUnavailable && (
+                        {!!monitorUnavailable && (!savedPlan || isSyntheticPlan) && (
                           <small className="disabled-reason">
                             {monitorUnavailable}
                           </small>
@@ -2795,7 +2808,7 @@ export default function App() {
                               onChanged={() => refresh(true)}
                             />
                           )}
-                        {boot.demo && savedPlan && (
+                        {isSyntheticPlan && savedPlan && (
                           <button
                             className="text-button replay-button"
                             disabled={
